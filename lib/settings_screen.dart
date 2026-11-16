@@ -40,6 +40,58 @@ class _SettingsState extends State<SettingsScreen> {
     }
   }
 
+  /// Lets the user click through the folders on the NAS and pick where FreeNotes should store its data.
+  Future<void> _browse() async {
+    final u = Uri.tryParse(url.text.trim());
+    if (u == null || !u.hasScheme || u.host.isEmpty) {
+      snack(context, 'Bitte zuerst die Adresse der NAS eintragen, z. B. https://NAS-IP:5006');
+      return;
+    }
+    final root = u.replace(pathSegments: const []);
+    final nas = NasClient(NasConfig()
+      ..url = root.toString()
+      ..user = user.text.trim()
+      ..password = pass.text
+      ..selfSigned = selfSigned);
+    final segs = <String>[];
+    const use = '\u0000use', up = '\u0000up';
+    try {
+      while (mounted) {
+        final folders = await nas.listFolders(segs.isEmpty ? '' : '${segs.map(Uri.encodeComponent).join('/')}/');
+        if (!mounted) return;
+        final pick = await showDialog<String>(
+            context: context,
+            builder: (ctx) => SimpleDialog(title: Text(segs.isEmpty ? 'Ordner auf der NAS' : '/${segs.join('/')}'), children: [
+                  if (segs.isNotEmpty)
+                    SimpleDialogOption(
+                        onPressed: () => Navigator.pop(ctx, use),
+                        child: const Text('✓ Hier speichern', style: TextStyle(fontWeight: FontWeight.bold))),
+                  if (segs.isNotEmpty) SimpleDialogOption(onPressed: () => Navigator.pop(ctx, up), child: const Text('← Zurück')),
+                  for (final f in folders)
+                    SimpleDialogOption(
+                        onPressed: () => Navigator.pop(ctx, f),
+                        child: Row(children: [const Icon(Icons.folder_outlined), const SizedBox(width: 12), Expanded(child: Text(f))])),
+                  if (folders.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('Keine Unterordner.')),
+                ]));
+        if (pick == null) return;
+        if (pick == up) {
+          segs.removeLast();
+        } else if (pick == use) {
+          final inside = segs.last.toLowerCase() == 'freenotes';
+          setState(() => url.text = root.replace(pathSegments: [...segs, if (!inside) 'FreeNotes']).toString());
+          await _save();
+          return;
+        } else {
+          segs.add(pick);
+        }
+      }
+    } catch (e) {
+      if (mounted) snack(context, 'Ordner auf der NAS konnten nicht gelesen werden: $e');
+    } finally {
+      nas.close();
+    }
+  }
+
   Future<void> _changeLocation() async {
     final picked = await FilePicker.getDirectoryPath(dialogTitle: 'Neuen Speicherort für FreeNotes wählen');
     if (picked == null || !mounted) return;
@@ -97,6 +149,8 @@ class _SettingsState extends State<SettingsScreen> {
             const SizedBox(height: 12),
             Wrap(spacing: 12, runSpacing: 8, children: [
               FilledButton(onPressed: testing ? null : _save, child: const Text('Speichern und testen')),
+              OutlinedButton.icon(
+                  icon: const Icon(Icons.folder_outlined), label: const Text('Ordner auf der NAS durchsuchen'), onPressed: _browse),
               OutlinedButton(onPressed: widget.sync.cfg.enabled ? widget.sync.run : null, child: const Text('Jetzt synchronisieren')),
             ]),
             if (testing) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),

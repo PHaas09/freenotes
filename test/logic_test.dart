@@ -50,4 +50,16 @@ void main() {
     expect(validAsset.hasMatch('../../evil.pdf'), isFalse);
     expect(validId.hasMatch('../x'), isFalse);
   });
+
+  test('NAS folder list is read from a WebDAV reply', () {
+    const xml = '''<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+<D:response><D:href>/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+<D:response><D:href>/personal_folder/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+<D:response><D:href>/Meine%20Fotos/</D:href><D:propstat><D:prop><D:resourcetype><D:collection /></D:resourcetype></D:prop></D:propstat></D:response>
+<D:response><D:href>/notiz.txt</D:href><D:propstat><D:prop><D:resourcetype/></D:prop></D:propstat></D:response>
+</D:multistatus>''';
+    expect(parseFolders(xml, '/'), ['Meine Fotos', 'personal_folder']);
+    expect(parseFolders(xml.replaceAll('D:', 'd:'), '/'), ['Meine Fotos', 'personal_folder']);
+  });
 }

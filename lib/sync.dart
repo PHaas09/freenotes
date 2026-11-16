@@ -45,8 +45,9 @@ class NasClient {
   final String _auth;
   late final http.Client _c;
 
-  Future<http.Response> _send(String method, String rel, [List<int>? body]) async {
+  Future<http.Response> _send(String method, String rel, [List<int>? body, Map<String, String>? headers]) async {
     final req = http.Request(method, _base.resolve(rel))..headers['Authorization'] = _auth;
+    if (headers != null) req.headers.addAll(headers);
     if (body != null) req.bodyBytes = body;
     return http.Response.fromStream(await _c.send(req).timeout(const Duration(seconds: 60)));
   }
@@ -81,7 +82,30 @@ class NasClient {
     if (r.statusCode != 405 && r.statusCode != 301) _check(r, 'MKCOL', rel); // 405 = already exists
   }
 
+  /// Names of the subfolders of [rel] (WebDAV PROPFIND, one level deep).
+  Future<List<String>> listFolders(String rel) async {
+    const body = '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>';
+    final r = await _send('PROPFIND', rel, utf8.encode(body), {'Depth': '1', 'Content-Type': 'application/xml'});
+    if (r.statusCode != 207) _check(r, 'PROPFIND', rel);
+    return parseFolders(utf8.decode(r.bodyBytes), _base.resolve(rel).path);
+  }
+
   void close() => _c.close();
+}
+
+/// Folder names from a PROPFIND reply, without the folder [selfPath] itself.
+List<String> parseFolders(String xml, String selfPath) {
+  final self = Uri.decodeFull(selfPath).replaceAll(RegExp(r'/+$'), '');
+  final names = <String>[];
+  for (final m in RegExp(r'<(?:\w+:)?response\b.*?</(?:\w+:)?response>', dotAll: true).allMatches(xml)) {
+    final block = m[0]!;
+    final href = RegExp(r'<(?:\w+:)?href>([^<]*)<').firstMatch(block)?[1]?.trim();
+    if (href == null || !RegExp(r'<(?:\w+:)?collection\s*/?>').hasMatch(block)) continue;
+    final path = Uri.decodeFull(Uri.parse(href).path).replaceAll(RegExp(r'/+$'), '');
+    if (path == self || path.isEmpty) continue;
+    names.add(path.split('/').last);
+  }
+  return names..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 }
 
 class SyncService {
