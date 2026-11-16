@@ -3,6 +3,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:material_ui/material_ui.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import 'dialogs.dart';
 import 'library_screen.dart';
 import 'store.dart';
 import 'sync.dart';
@@ -10,11 +11,44 @@ import 'sync.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await pdfrxFlutterInitialize();
-  final store = await Store.open();
+  final Store store;
+  try {
+    store = await Store.open();
+  } on StorageMissing catch (e) {
+    return runApp(_StorageMissingApp(e.path));
+  }
   final sync = SyncService(store);
   await sync.load();
   runApp(FreeNotesApp(store: store, sync: sync));
   sync.run();
+}
+
+/// Shown instead of the app when the storage folder (e.g. drive G:) is not connected.
+class _StorageMissingApp extends StatelessWidget {
+  const _StorageMissingApp(this.path);
+  final String path;
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        title: 'FreeNotes',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(colorSchemeSeed: const Color(0xFF4F46E5)),
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.folder_off_outlined, size: 56),
+                const SizedBox(height: 16),
+                Text('Speicherort nicht erreichbar:\n$path', textAlign: TextAlign.center, style: const TextStyle(fontSize: 18)),
+                const SizedBox(height: 8),
+                const Text('Schließe das Laufwerk an (oder verbinde es neu) und versuche es dann erneut.', textAlign: TextAlign.center),
+                const SizedBox(height: 24),
+                FilledButton(onPressed: restartApp, child: const Text('Erneut versuchen')),
+              ]),
+            ),
+          ),
+        ),
+      );
 }
 
 class FreeNotesApp extends StatefulWidget {

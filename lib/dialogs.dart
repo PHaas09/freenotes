@@ -1,6 +1,14 @@
+import 'dart:io';
+
 import 'package:material_ui/material_ui.dart';
 
 import 'store.dart';
+
+/// Starts a fresh copy of the app and ends this one (desktop only).
+Future<Never> restartApp() async {
+  await Process.start(Platform.resolvedExecutable, const [], mode: ProcessStartMode.detached);
+  exit(0);
+}
 
 void snack(BuildContext context, String msg) =>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));

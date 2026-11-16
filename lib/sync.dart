@@ -51,28 +51,34 @@ class NasClient {
     return http.Response.fromStream(await _c.send(req).timeout(const Duration(seconds: 60)));
   }
 
-  void _check(http.Response r) {
-    if (r.statusCode == 401 || r.statusCode == 403) throw 'Benutzername oder Passwort falsch (${r.statusCode})';
-    if (r.statusCode == 409) throw 'Der Ordner in der NAS-Adresse existiert nicht';
-    if (r.statusCode >= 300) throw 'NAS-Fehler ${r.statusCode}';
+  /// Throws a readable error naming the step that failed, e.g. "NAS-Fehler 405 bei PUT library.json".
+  void _check(http.Response r, String method, String rel) {
+    final at = 'bei $method ${rel.isEmpty ? '/' : rel}';
+    final c = r.statusCode;
+    if (c == 401 || c == 403) throw 'Benutzername oder Passwort falsch oder keine Schreibrechte ($c $at)';
+    if (c == 409) throw 'Ein Ordner in der NAS-Adresse existiert nicht ($c $at)';
+    if (c == 405 && method != 'GET') {
+      throw 'Die NAS erlaubt hier kein Schreiben ($c $at). Stimmt der Name der Freigabe in der Adresse?';
+    }
+    if (c >= 300) throw 'NAS-Fehler $c $at';
   }
 
   Future<List<int>?> get(String rel) async {
     final r = await _send('GET', rel);
     if (r.statusCode == 404) return null;
-    _check(r);
+    _check(r, 'GET', rel);
     return r.bodyBytes;
   }
 
-  Future<void> put(String rel, List<int> body) async => _check(await _send('PUT', rel, body));
+  Future<void> put(String rel, List<int> body) async => _check(await _send('PUT', rel, body), 'PUT', rel);
   Future<void> delete(String rel) async {
     final r = await _send('DELETE', rel);
-    if (r.statusCode != 404) _check(r);
+    if (r.statusCode != 404) _check(r, 'DELETE', rel);
   }
 
   Future<void> mkcol(String rel) async {
     final r = await _send('MKCOL', rel);
-    if (r.statusCode != 405 && r.statusCode != 301) _check(r); // 405 = already exists
+    if (r.statusCode != 405 && r.statusCode != 301) _check(r, 'MKCOL', rel); // 405 = already exists
   }
 
   void close() => _c.close();
@@ -113,12 +119,14 @@ class SyncService {
     await _secure.write(key: 'nas_password', value: cfg.password);
   }
 
-  /// Checks the connection without changing anything except creating the folders.
+  /// Checks that the folder can be read AND written (writes and deletes a small test file).
   Future<String> test() async {
     final nas = NasClient(cfg);
     try {
       await nas.mkcol('');
       await nas.get('library.json');
+      await nas.put('.freenotes-test', utf8.encode('ok'));
+      await nas.delete('.freenotes-test');
       return 'Verbindung OK';
     } catch (e) {
       return 'Fehler: $e';

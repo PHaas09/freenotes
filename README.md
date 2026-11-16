@@ -52,6 +52,11 @@ notebooks\<id>.json   Seiten eines Notizbuchs
 assets\               importierte PDFs und Bilder
 ```
 
+**Anderen Speicherort wählen** (z. B. ein zweites Laufwerk): Zahnrad → *Speicherort ändern…*. FreeNotes
+verschiebt alle Notizen in einen Ordner `FreeNotes` am neuen Ort, löscht die alte Kopie erst, wenn alles
+geprüft kopiert ist, und startet neu. Ist das Laufwerk später nicht angeschlossen, meldet FreeNotes das,
+statt mit einem leeren Ordner zu starten.
+
 Jede Änderung wird nach weniger als einer Sekunde gespeichert. Es wird zuerst in eine
 Zwischendatei geschrieben und dann ausgetauscht, sodass ein Absturz nie eine halbe Datei hinterlässt.
 

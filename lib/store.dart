@@ -8,7 +8,13 @@ import 'package:path_provider/path_provider.dart';
 
 import 'model.dart';
 
-/// Local storage in Documents/FreeNotes:
+/// Thrown at start when the chosen storage folder (e.g. on drive G:) is not reachable.
+class StorageMissing implements Exception {
+  StorageMissing(this.path);
+  final String path;
+}
+
+/// Local storage, by default in Documents/FreeNotes (the folder can be changed in the settings):
 ///   library.json          folders + notebook list
 ///   notebooks/ID.json     pages of one notebook
 ///   assets/NAME           imported PDFs and images
@@ -23,9 +29,21 @@ class Store extends ChangeNotifier {
   Timer? _timer;
   Future<void> _queue = Future.value();
 
+  /// Small file in the app's settings folder that remembers a custom storage folder.
+  static Future<File> _locationFile() async =>
+      File(p.join((await getApplicationSupportDirectory()).path, 'location.json'));
+
   static Future<Store> open() async {
-    final docs = await getApplicationDocumentsDirectory();
-    final s = Store(Directory(p.join(docs.path, 'FreeNotes')));
+    final loc = await _locationFile();
+    String path;
+    if (await loc.exists()) {
+      path = (jsonDecode(await loc.readAsString()) as Map<String, dynamic>)['path'] as String;
+      // Never silently fall back to another folder: a missing drive must not look like "no notes".
+      if (!await Directory(path).exists()) throw StorageMissing(path);
+    } else {
+      path = p.join((await getApplicationDocumentsDirectory()).path, 'FreeNotes');
+    }
+    final s = Store(Directory(path));
     await Directory(p.join(s.dir.path, 'notebooks')).create(recursive: true);
     await Directory(p.join(s.dir.path, 'assets')).create(recursive: true);
     final lib = s.file('library.json'), base = s.file('sync_state.json');
@@ -137,6 +155,35 @@ class Store extends ChangeNotifier {
     }
     await saveLibrary();
     notifyListeners();
+  }
+
+  /// Moves all notes into [picked] (a "FreeNotes" subfolder is used unless the folder is already
+  /// called that) and remembers it as the storage folder. If the target already holds FreeNotes
+  /// data, that data is used and the current folder is kept untouched, so nothing is overwritten.
+  /// Returns the new folder. The app must restart afterwards.
+  Future<String> moveTo(String picked) async {
+    final target = p.normalize(p.basename(picked).toLowerCase() == 'freenotes' ? picked : p.join(picked, 'FreeNotes'));
+    final from = p.normalize(dir.path);
+    if (p.equals(target, from) || p.isWithin(from, target) || p.isWithin(target, from)) {
+      throw 'Bitte einen Ordner außerhalb des jetzigen Speicherorts wählen.';
+    }
+    await flush();
+    await Directory(target).create(recursive: true);
+    final existing = await File(p.join(target, 'library.json')).exists();
+    if (!existing) {
+      await for (final e in dir.list(recursive: true)) {
+        if (e is! File || e.path.endsWith('.tmp')) continue;
+        final dst = File(p.join(target, p.relative(e.path, from: from)));
+        await dst.parent.create(recursive: true);
+        await e.copy(dst.path);
+        if (await dst.length() != await e.length()) throw 'Kopieren fehlgeschlagen: ${e.path}';
+      }
+    }
+    final loc = await _locationFile();
+    await loc.parent.create(recursive: true);
+    await loc.writeAsString(jsonEncode({'path': target}));
+    if (!existing) await dir.delete(recursive: true); // only after every file was copied and checked
+    return target;
   }
 
   /// Copies a picked file into the assets folder and returns its new name.

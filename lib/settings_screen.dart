@@ -1,5 +1,7 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'dialogs.dart';
 import 'store.dart';
 import 'sync.dart';
 
@@ -35,6 +37,28 @@ class _SettingsState extends State<SettingsScreen> {
       setState(() => result = 'Fehler: $e');
     } finally {
       if (mounted) setState(() => testing = false);
+    }
+  }
+
+  Future<void> _changeLocation() async {
+    final picked = await FilePicker.getDirectoryPath(dialogTitle: 'Neuen Speicherort für FreeNotes wählen');
+    if (picked == null || !mounted) return;
+    if (!await confirm(context, 'Notizen verschieben?',
+        'Alle Notizbücher werden in einen Ordner „FreeNotes“ unter\n$picked\nverschoben und am alten Ort gelöscht, '
+        'sobald alles kopiert ist. Gibt es dort schon FreeNotes-Daten, werden diese verwendet und der alte Ort bleibt unverändert.\n\n'
+        'FreeNotes startet danach neu.', ok: 'Verschieben')) {
+      return;
+    }
+    while (widget.sync.busy.value) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    widget.sync.busy.value = true; // blocks NAS sync while files move; the app restarts afterwards
+    try {
+      await widget.store.moveTo(picked);
+      await restartApp();
+    } catch (e) {
+      widget.sync.busy.value = false;
+      if (mounted) snack(context, 'Verschieben fehlgeschlagen: $e');
     }
   }
 
@@ -84,6 +108,11 @@ class _SettingsState extends State<SettingsScreen> {
             Text('Lokaler Speicherort', style: t.titleMedium),
             const SizedBox(height: 4),
             SelectableText(widget.store.dir.path),
+            const SizedBox(height: 8),
+            Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                    icon: const Icon(Icons.folder_outlined), label: const Text('Speicherort ändern…'), onPressed: _changeLocation)),
           ]),
         ),
       ),
