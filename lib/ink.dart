@@ -26,9 +26,17 @@ const palette = [
   0xFFD81B60, 0xFFF48FB1, 0xFF8E24AA, 0xFF5E35B1, 0xFF6D4C41, 0xFF90A4AE,
 ];
 
-/// Outline of a stroke as a filled shape (cached on the stroke once it's finished).
-Path strokePath(Stroke s, {bool complete = true}) {
-  if (complete && s.path != null) return s.path!;
+// Path cache lives next to the strokes (not inside them): a Path can't be sent to the save isolate.
+final _paths = Expando<Path>();
+
+/// Area a stroke covers, including its width.
+Rect strokeBounds(Stroke s) => s.bounds;
+
+/// Outline of a stroke as a filled shape. Finished strokes are cached unless [cache] is false
+/// (the endless sheet keeps its own image tiles instead of one path per stroke).
+Path strokePath(Stroke s, {bool complete = true, bool cache = true}) {
+  final hit = complete ? _paths[s] : null;
+  if (hit != null) return hit;
   final pen = penTypes[s.type] ?? penTypes['ballpoint']!;
   final pts = [for (var i = 0; i + 2 < s.pts.length; i += 3) PointVector(s.pts[i], s.pts[i + 1], s.pts[i + 2])];
   final outline = getStroke(pts,
@@ -37,15 +45,33 @@ Path strokePath(Stroke s, {bool complete = true}) {
           simulatePressure: s.sim && pen.thinning > 0, isComplete: complete));
   final path = Path();
   if (outline.length > 2) path.addPolygon(outline, true);
-  if (complete) s.path = path;
+  if (complete && cache) _paths[s] = path;
   return path;
 }
 
-void paintStroke(Canvas c, Stroke s, {bool complete = true}) {
+Paint _inkPaint(Stroke s) {
   final pen = penTypes[s.type] ?? penTypes['ballpoint']!;
   final color = Color(s.color);
-  c.drawPath(strokePath(s, complete: complete),
-      Paint()..color = pen.alpha < 1 ? color.withValues(alpha: pen.alpha) : color);
+  return Paint()..color = pen.alpha < 1 ? color.withValues(alpha: pen.alpha) : color;
+}
+
+void paintStroke(Canvas c, Stroke s, {bool complete = true, bool cache = true}) =>
+    c.drawPath(strokePath(s, complete: complete, cache: cache), _inkPaint(s));
+
+/// Draws a stroke for a view where [pxPerUnit] screen pixels make one page unit. Strokes only a few
+/// pixels wide are drawn as a plain line: looks the same, but is many times cheaper when zoomed far out.
+void paintStrokeLod(Canvas c, Stroke s, double pxPerUnit) {
+  if (s.size * pxPerUnit >= 2.5) return paintStroke(c, s, cache: false);
+  final q = s.pts, path = Path()..moveTo(q[0], q[1]);
+  for (var i = 3; i + 2 < q.length; i += 3) {
+    path.lineTo(q[i], q[i + 1]);
+  }
+  if (q.length == 3) path.lineTo(q[0] + 0.01, q[1]);
+  c.drawPath(path, _inkPaint(s)
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round
+    ..strokeWidth = s.size * 0.8);
 }
 
 double distToSeg(Offset p, Offset a, Offset b) {
@@ -57,7 +83,7 @@ double distToSeg(Offset p, Offset a, Offset b) {
 /// True if an eraser of radius [r] at [p] touches the stroke.
 bool hitStroke(Stroke s, Offset p, double r) {
   final tol = r + s.size / 2, q = s.pts;
-  if (q.length < 3) return false;
+  if (q.length < 3 || !strokeBounds(s).inflate(r).contains(p)) return false;
   var prev = Offset(q[0], q[1]);
   if (q.length == 3) return (p - prev).distance <= tol;
   for (var i = 3; i + 2 < q.length; i += 3) {
@@ -100,6 +126,28 @@ class PaperPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(PaperPainter old) => old.page.paper != page.paper || old.pdfImage != pdfImage || old.page != page;
+}
+
+/// Paper of the endless sheet, drawn in screen space for the current view ([offset], [scale]).
+/// The pattern spacing halves or doubles with the zoom, so it never gets too dense or too sparse.
+void paintEndlessPaper(Canvas c, Size size, String paper, Offset offset, double scale) {
+  c.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFFFFEFA));
+  if (paper == 'blank' || scale <= 0) return;
+  var g = 24.0;
+  while (g * scale < 16) { g *= 2; }
+  while (g * scale >= 32) { g /= 2; }
+  final step = g * scale, x0 = offset.dx % step, y0 = offset.dy % step;
+  if (paper == 'dots') {
+    c.drawPoints(ui.PointMode.points, [
+      for (var x = x0; x < size.width; x += step) for (var y = y0; y < size.height; y += step) Offset(x, y)
+    ], Paint()..color = const Color(0xFFAAB6C6)..strokeWidth = 2..strokeCap = StrokeCap.round);
+    return;
+  }
+  final line = Paint()..color = const Color(0xFFCDD8E6)..strokeWidth = 1;
+  for (var y = y0; y < size.height; y += step) { c.drawLine(Offset(0, y), Offset(size.width, y), line); }
+  if (paper == 'grid') {
+    for (var x = x0; x < size.width; x += step) { c.drawLine(Offset(x, 0), Offset(x, size.height), line); }
+  }
 }
 
 /// Finished strokes. Recorded once into a Picture per strokes list, so zooming and

@@ -1,6 +1,6 @@
 # FreeNotes
 
-Eine kostenlose, quelloffene Handschrift-Notiz-App für Windows, Android und iPhone.
+Eine kostenlose, quelloffene Handschrift-Notiz-App für Windows, Linux (Ubuntu), Android und iPhone.
 Schreiben mit Stift, Maus oder Finger, PDFs beschriften und alles automatisch auf
 der eigenen NAS sichern. Kein Abo, kein Konto, keine Cloud eines Anbieters.
 
@@ -13,7 +13,9 @@ der eigenen NAS sichern. Kein Abo, kein Konto, keine Cloud eines Anbieters.
 - **Radierer** in 3 Größen; die Radierer-Seite eines Stylus funktioniert auch
 - **Text und Bilder** auf der Seite einfügen, verschieben, Bilder vergrößern
 - **PDF importieren** und direkt darauf schreiben
-- **Zoomen und Verschieben:** zwei Finger, Touchpad, Strg + Mausrad, rechte Maustaste ziehen
+- **Unendliches Blatt:** ein einziges Blatt ohne Ränder, auf das der Inhalt von über 1000 Seiten passt; bleibt dank Bild-Kacheln (wie bei einer Online-Karte) auch dann flüssig
+- **Zoomen und Verschieben:** zwei Finger (mit Schwung), Touchpad, Strg + Mausrad, Strg + Plus/Minus, rechte Maustaste ziehen; A4-Seiten bis 3000 %, das unendliche Blatt von 0,2 % bis 20 000 %
+- **Strichstärke passt sich dem Zoom an:** hineingezoomt schreibt der Stift automatisch feiner, die Linie sieht am Bildschirm immer gleich dick aus
 - **Notizbücher** mit farbigen Covern, in **Ordnern** sortiert
 - **Papier:** blanko, liniert, kariert oder punktiert, pro Seite wählbar
 - **Suche** nach Notizbuch-Namen und getipptem Text
@@ -31,6 +33,17 @@ Alle Dateien gibt es auf der Seite **[Neueste Version](../../releases/latest)**.
 2. **An die Taskleiste heften:** Startmenü öffnen, **FreeNotes** suchen, Rechtsklick → **An Taskleiste anheften**.
 
 Deinstallieren über *Einstellungen → Apps*. Deine Notizen bleiben dabei erhalten.
+
+### Linux (Ubuntu 22.04 und neuer)
+
+1. `freenotes_x.y.z_amd64.deb` laden.
+2. Installieren: Doppelklick auf die Datei, oder im Terminal im Download-Ordner:
+   ```bash
+   sudo apt install ./freenotes_*_amd64.deb
+   ```
+3. FreeNotes im App-Menü starten. **Ans Dock heften:** Rechtsklick auf das Symbol → **Zu Favoriten hinzufügen**.
+
+Deinstallieren: `sudo apt remove freenotes`. Die Notizen in `~/Dokumente/FreeNotes` bleiben erhalten.
 
 ### Android
 
@@ -66,7 +79,8 @@ Mit einem Apple-Entwicklerkonto (99 €/Jahr) ginge es ohne Ablauf über TestFli
 |---|---|
 | Zoomen | zwei Finger, Touchpad-Pinch oder **Strg + Mausrad** |
 | Verschieben | Mausrad (mit **Umschalt** waagrecht), rechte Maustaste ziehen, zwei Finger |
-| Ganze Seite zeigen | **Strg + 0** |
+| Ganze Seite / alles zeigen | **Strg + 0** oder auf die Zoom-Anzeige tippen |
+| Stufenweise zoomen | **Strg + Plus** / **Strg + Minus** |
 | Rückgängig / Wiederholen | **Strg + Z** / **Strg + Y** |
 | Seite blättern | **←** / **→** |
 | Text einfügen | Text-Werkzeug wählen, auf die Seite tippen |
@@ -158,10 +172,13 @@ App-Icon ändern: `tool/make_icon.py` anpassen, dann `python tool/make_icon.py` 
 | `lib/sync.dart` | WebDAV-Synchronisierung mit der NAS |
 | `lib/library_screen.dart` | Startseite: Ordner, Notizbücher, Suche, PDF-Import |
 | `lib/editor_screen.dart` | Editor: Zeichnen, Zoomen, Text, Bilder, Seiten |
+| `lib/tiles.dart` | Bild-Kacheln für das unendliche Blatt (flüssig auch bei 1000 Seiten Inhalt) |
 | `lib/settings_screen.dart` | NAS-Einstellungen |
 | `test/` | Tests für Sync, Radierer, Speicherformat, Speicherort-Wechsel und NAS-Ordnerliste |
 | `installer/`, `tool/` | Windows-Installer, Build-Skript, Icon-Generator |
 | `.github/workflows/ios.yml` | Baut die iPhone-App auf GitHub |
+| `.github/workflows/linux.yml` | Baut die Linux-App (.deb) auf GitHub und testet Installation und Start |
+| `benchmark/` | Belastungstest: 1000 A4-Seiten auf einem unendlichen Blatt (`flutter test benchmark/`) |
 
 ## Noch nicht enthalten
 

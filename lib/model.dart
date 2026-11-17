@@ -1,4 +1,7 @@
+import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
+import 'dart:typed_data';
 import 'dart:ui';
 
 final _rnd = Random.secure();
@@ -13,6 +16,8 @@ final validId = RegExp(r'^[a-z0-9]{4,40}$');
 final validAsset = RegExp(r'^[a-z0-9]{4,40}\.[a-z0-9]{2,5}$');
 
 /// One pen stroke. [pts] holds x, y, pressure triplets in page units.
+/// Finished strokes keep their points in a Float32List (4 bytes per number): an endless sheet can hold
+/// hundreds of thousands of strokes. Holds only plain data, so notebooks can be saved in a background isolate.
 class Stroke {
   Stroke({required this.type, required this.color, required this.size, required this.pts, this.sim = false});
   final String type; // ballpoint | fountain | pencil | highlighter
@@ -20,22 +25,57 @@ class Stroke {
   final double size;
   final List<double> pts;
   final bool sim; // no real pressure (mouse/finger): simulate it from speed
-  Path? path; // render cache
 
-  Map<String, dynamic> toJson() => {
-        't': type,
-        'c': color,
-        's': size,
-        if (sim) 'sim': true,
-        'p': [for (var i = 0; i < pts.length; i++) i % 3 == 2 ? (pts[i] * 100).round() / 100 : (pts[i] * 10).round() / 10],
-      };
+  /// Area the stroke covers, including its width. Computed once; for loaded notebooks already in the
+  /// background isolate, so opening a huge endless sheet doesn't freeze the screen.
+  late final Rect bounds = () {
+    var l = double.infinity, t = double.infinity, r = -double.infinity, b = -double.infinity;
+    for (var i = 0; i + 2 < pts.length; i += 3) {
+      if (pts[i] < l) l = pts[i];
+      if (pts[i] > r) r = pts[i];
+      if (pts[i + 1] < t) t = pts[i + 1];
+      if (pts[i + 1] > b) b = pts[i + 1];
+    }
+    return pts.length < 3 ? Rect.zero : Rect.fromLTRB(l, t, r, b).inflate(size);
+  }();
+
+  Map<String, dynamic> toJson() {
+    // Precision follows the stroke width: a line drawn while zoomed in far keeps its detail.
+    final q = pow(10, (log(8 / size) / ln10).ceil().clamp(1, 6)).toDouble();
+    return {
+      't': type,
+      'c': color,
+      's': size,
+      if (sim) 'sim': true,
+      'p': [for (var i = 0; i < pts.length; i++) i % 3 == 2 ? (pts[i] * 100).round() / 100 : (pts[i] * q).round() / q],
+    };
+  }
+
   factory Stroke.fromJson(Map<String, dynamic> j) => Stroke(
       type: j['t'] as String,
       color: j['c'] as int,
       size: _d(j['s']),
       sim: j['sim'] == true,
-      pts: [for (final v in j['p'] as List) _d(v)]);
+      pts: Float32List.fromList([for (final v in j['p'] as List) _d(v)]));
 }
+
+/// JSON <-> notebook in a background isolate, so big notebooks never freeze the UI.
+Future<List<int>> encodeNotebook(Notebook nb) => Isolate.run(() => utf8.encode(jsonEncode(nb)));
+Future<Notebook> decodeNotebook(List<int> bytes) => Isolate.run(() {
+      final nb = Notebook.fromJson(jsonDecode(utf8.decode(bytes)));
+      for (final p in nb.pages) {
+        for (final s in p.strokes) {
+          s.bounds; // computed here, off the UI thread
+        }
+      }
+      return nb;
+    });
+
+/// Checks a notebook file (e.g. from the NAS) and returns its attachments plus the bytes to store under [id].
+Future<(Set<String>, List<int>)> checkNotebookFile(List<int> bytes, String id) => Isolate.run(() {
+      final nb = Notebook.fromJson(jsonDecode(utf8.decode(bytes)));
+      return (nb.assets(), nb.id == id ? bytes : utf8.encode(jsonEncode(Notebook(id, nb.pages))));
+    });
 
 class TextBox {
   const TextBox({required this.id, required this.x, required this.y, required this.text,
@@ -66,11 +106,12 @@ class ImageBox {
 /// A page. Its lists are replaced, never changed in place, so undo can keep old ones.
 class NotePage {
   NotePage({String? id, this.paper = 'lined', this.w = 595, this.h = 842, this.pdf, this.pdfPage,
-      this.strokes = const [], this.texts = const [], this.images = const []})
+      this.infinite = false, this.strokes = const [], this.texts = const [], this.images = const []})
       : id = id ?? newId();
   final String id;
   String paper; // blank | lined | grid | dots
-  final double w, h; // page units = PDF points (A4 = 595 x 842)
+  final double w, h; // page units = PDF points (A4 = 595 x 842); not used by an endless sheet
+  final bool infinite; // endless sheet: no edges, any zoom
   final String? pdf; // asset name of an imported PDF
   final int? pdfPage;
   List<Stroke> strokes;
@@ -79,13 +120,14 @@ class NotePage {
 
   Map<String, dynamic> toJson() => {
         'id': id, 'paper': paper, 'w': w, 'h': h,
+        if (infinite) 'inf': true,
         if (pdf != null) 'pdf': pdf,
         if (pdfPage != null) 'pdfPage': pdfPage,
         'strokes': strokes, 'texts': texts, 'images': images,
       };
   factory NotePage.fromJson(Map<String, dynamic> j) => NotePage(
       id: j['id'] as String, paper: j['paper'] as String, w: _d(j['w']), h: _d(j['h']),
-      pdf: j['pdf'] as String?, pdfPage: j['pdfPage'] as int?,
+      pdf: j['pdf'] as String?, pdfPage: j['pdfPage'] as int?, infinite: j['inf'] == true,
       strokes: [for (final s in j['strokes'] as List) Stroke.fromJson(s)],
       texts: [for (final t in j['texts'] as List) TextBox.fromJson(t)],
       images: [for (final i in j['images'] as List) ImageBox.fromJson(i)]);

@@ -32,6 +32,7 @@ class _LibraryState extends State<LibraryScreen> {
     final name = TextEditingController(text: 'Notizbuch ${store.notebooks.length + 1}');
     var cover = covers[store.notebooks.length % covers.length];
     var paper = 'lined';
+    var endless = false;
     final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => StatefulBuilder(
@@ -56,6 +57,16 @@ class _LibraryState extends State<LibraryScreen> {
                             ],
                             onChanged: (v) => paper = v ?? paper,
                           ),
+                          const SizedBox(height: 16),
+                          DropdownButtonFormField<bool>(
+                            initialValue: endless,
+                            decoration: const InputDecoration(labelText: 'Format'),
+                            items: const [
+                              DropdownMenuItem(value: false, child: Text('Seiten (A4)')),
+                              DropdownMenuItem(value: true, child: Text('Unendliches Blatt')),
+                            ],
+                            onChanged: (v) => endless = v ?? endless,
+                          ),
                         ])),
                     actions: [
                       TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Abbrechen')),
@@ -63,7 +74,7 @@ class _LibraryState extends State<LibraryScreen> {
                     ])));
     if (ok != true || !mounted) return;
     final n = name.text.trim().isEmpty ? 'Notizbuch' : name.text.trim();
-    _open(await store.createNotebook(n, folder: folder, cover: cover, pages: [NotePage(paper: paper)]));
+    _open(await store.createNotebook(n, folder: folder, cover: cover, pages: [NotePage(paper: paper, infinite: endless)]));
   }
 
   Future<void> _importPdf() async {

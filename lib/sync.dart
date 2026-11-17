@@ -240,7 +240,7 @@ class SyncService {
       return snap;
     }
     final bytes = await store.notebookFile(l.id).readAsBytes();
-    for (final a in Notebook.fromJson(jsonDecode(utf8.decode(bytes))).assets()) {
+    for (final a in (await checkNotebookFile(bytes, l.id)).$1) {
       final f = File(store.assetPath(a));
       if (remoteAssets.contains(a) || !validAsset.hasMatch(a) || !await f.exists()) continue;
       await nas.put('assets/$a', await f.readAsBytes());
@@ -257,14 +257,14 @@ class SyncService {
       if (await f.exists()) await f.delete();
     } else {
       final bytes = await nas.get('notebooks/${r.id}.json') ?? (throw 'Notizbuch "${r.name}" fehlt auf der NAS');
-      final nb = Notebook.fromJson(jsonDecode(utf8.decode(bytes))); // also validates the file
-      for (final a in nb.assets()) {
+      final id = saveAs?.id ?? r.id;
+      final (assets, file) = await checkNotebookFile(bytes, id); // also validates the file
+      for (final a in assets) {
         if (!validAsset.hasMatch(a) || await File(s.assetPath(a)).exists()) continue;
         final data = await nas.get('assets/$a');
         if (data != null) await s.writeAtomic(File(s.assetPath(a)), data);
       }
-      final id = saveAs?.id ?? r.id;
-      await s.writeAtomic(s.notebookFile(id), utf8.encode(jsonEncode(Notebook(id, nb.pages))));
+      await s.writeAtomic(s.notebookFile(id), file);
     }
     if (saveAs != null) {
       s.lib.notebooks.add(saveAs);

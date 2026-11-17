@@ -41,7 +41,13 @@ class Store extends ChangeNotifier {
       // Never silently fall back to another folder: a missing drive must not look like "no notes".
       if (!await Directory(path).exists()) throw StorageMissing(path);
     } else {
-      path = p.join((await getApplicationDocumentsDirectory()).path, 'FreeNotes');
+      Directory base;
+      try {
+        base = await getApplicationDocumentsDirectory();
+      } on MissingPlatformDirectoryException {
+        base = await getApplicationSupportDirectory(); // minimal Linux without a Documents folder
+      }
+      path = p.join(base.path, 'FreeNotes');
     }
     final s = Store(Directory(path));
     await Directory(p.join(s.dir.path, 'notebooks')).create(recursive: true);
@@ -78,7 +84,7 @@ class Store extends ChangeNotifier {
     if (_dirty[id] != null) return _dirty[id]!;
     final f = notebookFile(id);
     if (!await f.exists()) return Notebook(id, [NotePage()]);
-    return Notebook.fromJson(jsonDecode(await f.readAsString()));
+    return decodeNotebook(await f.readAsBytes());
   }
 
   /// Call after every edit. Saves to disk shortly after, batching quick edits.
@@ -88,16 +94,22 @@ class Store extends ChangeNotifier {
       ..search = nb.searchText();
     _dirty[nb.id] = nb;
     _timer?.cancel();
-    _timer = Timer(const Duration(milliseconds: 700), flush);
+    // A huge endless sheet takes a moment to save, so wait for a longer pause in writing.
+    final big = nb.pages.any((p) => p.strokes.length > 20000);
+    _timer = Timer(Duration(milliseconds: big ? 4000 : 700), flush);
   }
 
-  Future<void> flush() async {
+  /// Saves pending changes, one save at a time: an older save can never finish after and overwrite a newer one.
+  Future<void> flush() => _flushing = _flushing.then((_) => _flushNow());
+  Future<void> _flushing = Future.value();
+
+  Future<void> _flushNow() async {
     _timer?.cancel();
     final items = Map.of(_dirty);
     _dirty.clear();
     try {
       for (final nb in items.values) {
-        await writeAtomic(notebookFile(nb.id), utf8.encode(jsonEncode(nb)));
+        await writeAtomic(notebookFile(nb.id), await encodeNotebook(nb));
       }
       await saveLibrary();
       saveError = null;
@@ -116,7 +128,7 @@ class Store extends ChangeNotifier {
   Future<NotebookMeta> createNotebook(String name, {String? folder, int cover = 0xFF4F46E5, List<NotePage>? pages}) async {
     final m = NotebookMeta(id: newId(), name: name, folder: folder, cover: cover);
     final nb = Notebook(m.id, pages ?? [NotePage()]);
-    await writeAtomic(notebookFile(m.id), utf8.encode(jsonEncode(nb)));
+    await writeAtomic(notebookFile(m.id), await encodeNotebook(nb));
     lib.notebooks.add(m);
     await saveLibrary();
     notifyListeners();

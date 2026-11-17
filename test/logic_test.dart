@@ -37,12 +37,32 @@ void main() {
     final back = Notebook.fromJson(jsonDecode(jsonEncode(nb)));
     final p = back.pages.single;
     expect(p.paper, 'grid');
-    expect(p.strokes.single.pts, [1.2, 2.3, .46]);
+    expect(p.infinite, isFalse);
+    expect(p.strokes.single.pts, [closeTo(1.2, 1e-6), closeTo(2.3, 1e-6), closeTo(.46, 1e-6)]);
     expect(p.strokes.single.sim, isTrue);
     expect(p.texts.single.text, 'Hallo');
     expect(p.images.single.rect, const Rect.fromLTWH(1, 2, 3, 4));
     expect(back.assets(), {'abcd1234.png'});
     expect(back.searchText(), 'hallo');
+  });
+
+  test('a fine stroke drawn while zoomed in keeps its detail when saved', () {
+    // zoomed in 100x: pen width 2 becomes 0.02 page units
+    final fine = Stroke(type: 'ballpoint', color: 0, size: 0.02, pts: [100.1234, 50.5678, .5]);
+    final page = NotePage(infinite: true, strokes: [fine]);
+    final back = NotePage.fromJson(jsonDecode(jsonEncode(page)));
+    expect(back.infinite, isTrue);
+    expect(back.strokes.single.pts[0], closeTo(100.123, 0.002));
+    expect(back.strokes.single.pts[1], closeTo(50.568, 0.002));
+  });
+
+  test('saving and loading in a background isolate gives the same notebook', () async {
+    final nb = Notebook('abcd1234', [NotePage(infinite: true, strokes: [Stroke(type: 'pencil', color: 1, size: 3, pts: [1, 2, .5, 3, 4, .5])])]);
+    final back = await decodeNotebook(await encodeNotebook(nb));
+    expect(back.pages.single.strokes.single.pts, [1, 2, .5, 3, 4, .5]);
+    final (assets, bytes) = await checkNotebookFile(await encodeNotebook(nb), 'zzzz9999');
+    expect(assets, isEmpty);
+    expect((await decodeNotebook(bytes)).id, 'zzzz9999');
   });
 
   test('ids and asset names from the NAS are checked', () {

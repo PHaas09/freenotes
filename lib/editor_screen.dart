@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:pdfrx/pdfrx.dart';
@@ -13,6 +16,7 @@ import 'ink.dart';
 import 'model.dart';
 import 'store.dart';
 import 'sync.dart';
+import 'tiles.dart';
 
 enum Mode { pen, eraser, text, select }
 
@@ -44,10 +48,26 @@ class EditorScreen extends StatefulWidget {
   State<EditorScreen> createState() => _EditorState();
 }
 
-class _EditorState extends State<EditorScreen> {
+class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMixin {
   Notebook? nb;
   int index = 0;
   NotePage get page => nb!.pages[index];
+  bool get endless => page.infinite;
+  TileCache? tiles; // endless sheet only
+
+  /// Zoom relative to 100 %: whole page (A4) or 1 unit = 1 screen point (endless sheet).
+  /// Pen, eraser and text sizes are divided by it, so they look the same on screen at any zoom.
+  double get zoom => scale / (endless ? 1 : fitScale);
+  double get minScale => endless ? 0.002 : fitScale * 0.5;
+  double get maxScale => endless ? 200 : fitScale * 30;
+  double dpr = 1;
+  final zoomLabel = ValueNotifier<String?>(null);
+  Timer? _zoomLabelTimer;
+  late final Ticker _fling;
+  Offset _flingV = Offset.zero;
+  Duration _flingLast = Duration.zero;
+  VelocityTracker? _vt;
+  int _vtFingers = 0;
 
   Mode mode = Mode.pen;
   String pen = 'ballpoint';
@@ -83,11 +103,12 @@ class _EditorState extends State<EditorScreen> {
   @override
   void initState() {
     super.initState();
+    _fling = createTicker(_onFlingTick);
     widget.sync.openId = widget.meta.id;
     widget.store.loadNotebook(widget.meta.id).then((n) {
       if (!mounted) return;
       setState(() => nb = n);
-      _loadPdf();
+      _pageChanged();
     }, onError: (Object e) {
       if (mounted) snack(context, 'Notizbuch konnte nicht geöffnet werden: $e');
     });
@@ -99,6 +120,9 @@ class _EditorState extends State<EditorScreen> {
     widget.store.flush().then((_) => widget.sync.run());
     for (final d in pdfDocs.values) { d.dispose(); }
     for (final i in pdfImages.values) { i.dispose(); }
+    tiles?.dispose();
+    _fling.dispose();
+    _zoomLabelTimer?.cancel();
     super.dispose();
   }
 
@@ -106,27 +130,88 @@ class _EditorState extends State<EditorScreen> {
   Offset toPage(Offset local) => (local - offset) / scale;
 
   void _apply() {
-    final w = page.w * scale, h = page.h * scale;
-    offset = Offset(offset.dx.clamp(80 - w, math.max(80 - w, viewport.width - 80)),
-        offset.dy.clamp(80 - h, math.max(80 - h, viewport.height - 80)));
+    if (!endless) {
+      // A page can't be pushed completely out of sight.
+      final w = page.w * scale, h = page.h * scale;
+      offset = Offset(offset.dx.clamp(80 - w, math.max(80 - w, viewport.width - 80)),
+          offset.dy.clamp(80 - h, math.max(80 - h, viewport.height - 80)));
+    }
     view.value = Matrix4.translationValues(offset.dx, offset.dy, 0)..multiply(Matrix4.diagonal3Values(scale, scale, 1));
     tick.ping();
   }
 
+  double _pageFitScale() => math.min(viewport.width / page.w, viewport.height / page.h) * 0.96;
+
+  /// Whole page, or for the endless sheet: everything written on it (at most 100 %).
   void _fit() {
     if (viewport.isEmpty || nb == null) return;
-    scale = fitScale = math.min(viewport.width / page.w, viewport.height / page.h) * 0.96;
-    offset = Offset((viewport.width - page.w * scale) / 2, (viewport.height - page.h * scale) / 2);
+    _fling.stop();
+    if (endless) {
+      final b = _contentBounds();
+      scale = b == null ? 1 : math.min(1.0, math.min(viewport.width / b.width, viewport.height / b.height) * 0.9).clamp(minScale, 1.0);
+      offset = viewport.center(Offset.zero) - (b?.center ?? Offset.zero) * scale;
+    } else {
+      scale = fitScale = _pageFitScale();
+      offset = Offset((viewport.width - page.w * scale) / 2, (viewport.height - page.h * scale) / 2);
+    }
+    _showZoom();
+    _apply();
+  }
+
+  Rect? _contentBounds() {
+    Rect? b;
+    for (final s in page.strokes) { b = b == null ? strokeBounds(s) : b.expandToInclude(strokeBounds(s)); }
+    for (final t in page.texts) { b = b == null ? _textRect(t) : b.expandToInclude(_textRect(t)); }
+    for (final i in page.images) { b = b == null ? i.rect : b.expandToInclude(i.rect); }
+    return b;
+  }
+
+  /// The screen area changed (window resized, phone rotated): keep what's in the middle in the middle.
+  void _viewportChanged(Size old) {
+    if (old.isEmpty) return _fit();
+    if (!endless) fitScale = _pageFitScale();
+    offset += viewport.center(Offset.zero) - old.center(Offset.zero);
     _apply();
   }
 
   /// Zoom by [f] and move, keeping the page point under [c0] under [c1].
   void _zoomAround(Offset c0, Offset c1, double f) {
-    final ns = (scale * f).clamp(fitScale * 0.5, 10.0);
+    final ns = (scale * f).clamp(minScale, maxScale);
     final p = (c0 - offset) / scale;
     offset = c1 - p * ns;
-    scale = ns;
+    if (ns != scale) {
+      scale = ns;
+      _showZoom();
+      if (!endless) _loadPdf(); // sharper PDF when zoomed in
+    }
     _apply();
+  }
+
+  /// Briefly shows the zoom level (e.g. "250 %").
+  void _showZoom() {
+    zoomLabel.value = '${(zoom * 100).round()} %';
+    _zoomLabelTimer?.cancel();
+    _zoomLabelTimer = Timer(const Duration(milliseconds: 1200), () => zoomLabel.value = null);
+  }
+
+  /// Keeps sliding after a quick two-finger pan, slowing down like a sheet of paper on a table.
+  void _onFlingTick(Duration t) {
+    final dt = (t - _flingLast).inMicroseconds / 1e6;
+    _flingLast = t;
+    if (dt <= 0) return;
+    offset += _flingV * dt;
+    _flingV *= math.pow(0.03, dt).toDouble();
+    _apply();
+    if (_flingV.distance < 30) _fling.stop();
+  }
+
+  void _startFling() {
+    final v = _vt?.getVelocity().pixelsPerSecond ?? Offset.zero;
+    _vt = null;
+    if (v.distance < 300) return;
+    _flingV = v;
+    _flingLast = Duration.zero;
+    _fling.start();
   }
 
   // ---------- pointer input ----------
@@ -140,6 +225,8 @@ class _EditorState extends State<EditorScreen> {
 
   void _onDown(PointerDownEvent e) {
     if (nb == null) return;
+    _fling.stop();
+    if (touches.isEmpty) _vt = null;
     if (_isStylus(e)) stylusSeen = true;
     final touch = e.kind == PointerDeviceKind.touch, mouse = e.kind == PointerDeviceKind.mouse;
     if (mouse && e.buttons != kPrimaryMouseButton) {
@@ -178,13 +265,19 @@ class _EditorState extends State<EditorScreen> {
         final d0 = (prev[0] - prev[1]).distance;
         if (d0 > 1) f = (now[0] - now[1]).distance / d0;
       }
+      if (_vt == null || _vtFingers != now.length) { // finger count changed: the centre jumps, start over
+        _vt = VelocityTracker.withKind(PointerDeviceKind.touch);
+        _vtFingers = now.length;
+      }
+      _vt!.addPosition(e.timeStamp, _centroid(now));
       _zoomAround(_centroid(prev), _centroid(now), f);
     }
   }
 
   void _onUp(PointerEvent e, {bool cancel = false}) {
-    touches.remove(e.pointer);
+    final wasGesture = touches.remove(e.pointer) != null && e.pointer != drawPointer;
     if (e.pointer == drawPointer) _end(cancel: cancel);
+    if (wasGesture && touches.isEmpty && !cancel) _startFling();
   }
 
   Offset _centroid(List<Offset> l) => l.reduce((a, b) => a + b) / l.length.toDouble();
@@ -209,7 +302,8 @@ class _EditorState extends State<EditorScreen> {
       before = _snap();
       _eraseAt(p);
     } else if (mode == Mode.pen) {
-      live = Stroke(type: pen, color: colors[pen]!, size: sizes[pen]!, sim: !_isStylus(e), pts: [p.dx, p.dy, _pressure(e)]);
+      // Width follows the zoom: zoomed in 4x, the pen writes 4x finer, so it looks the same on screen.
+      live = Stroke(type: pen, color: colors[pen]!, size: sizes[pen]! / zoom, sim: !_isStylus(e), pts: [p.dx, p.dy, _pressure(e)]);
       tick.ping();
     } else {
       _objDown(p);
@@ -231,7 +325,8 @@ class _EditorState extends State<EditorScreen> {
     } else if (live != null) {
       final s = live!;
       live = null;
-      if (!cancel) _edit(() => page.strokes = [...page.strokes, s]);
+      final done = Stroke(type: s.type, color: s.color, size: s.size, sim: s.sim, pts: Float32List.fromList(s.pts));
+      if (!cancel) _edit(() => page.strokes = [...page.strokes, done]);
       tick.ping();
     } else {
       _objUp(cancel);
@@ -240,8 +335,13 @@ class _EditorState extends State<EditorScreen> {
 
   void _eraseAt(Offset p) {
     eraserAt = p;
-    final kept = page.strokes.where((s) => !hitStroke(s, p, eraserSize)).toList();
-    if (kept.length != page.strokes.length) setState(() => page.strokes = kept);
+    final r = eraserSize / zoom;
+    final hit = Set<Stroke>.identity()..addAll(page.strokes.where((s) => hitStroke(s, p, r)));
+    if (hit.isNotEmpty) {
+      final kept = [for (final s in page.strokes) if (!hit.contains(s)) s];
+      tiles?.setStrokes(kept, removed: hit.toList());
+      setState(() => page.strokes = kept);
+    }
     tick.ping();
   }
 
@@ -257,7 +357,10 @@ class _EditorState extends State<EditorScreen> {
   void _commit(_Snap b) {
     if (identical(b.strokes, page.strokes) && identical(b.texts, page.texts) && identical(b.images, page.images)) return;
     _h.undo.add(b);
-    if (_h.undo.length > 300) _h.undo.removeAt(0);
+    // Each step keeps the old stroke list; on a huge endless sheet keep fewer steps to save memory.
+    while (_h.undo.length > (page.strokes.length > 5000 ? 30 : 300)) {
+      _h.undo.removeAt(0);
+    }
     _h.redo.clear();
     widget.store.changed(nb!);
     setState(() {});
@@ -321,7 +424,7 @@ class _EditorState extends State<EditorScreen> {
     if (downAt == null || before == null) return;
     final d = p - downAt!;
     if (resizing && origImage != null) {
-      final r = origImage!.rect, w = math.max(24.0, r.width + d.dx);
+      final r = origImage!.rect, w = math.max(24 / scale, r.width + d.dx);
       _replaceImage(ImageBox(id: origImage!.id, asset: origImage!.asset, rect: Rect.fromLTWH(r.left, r.top, w, w * r.height / r.width)));
     } else if (origText != null) {
       final t = origText!.copyWith(x: origText!.x + d.dx, y: origText!.y + d.dy);
@@ -353,7 +456,9 @@ class _EditorState extends State<EditorScreen> {
 
   Future<void> _editText(TextBox? t, Offset at) async {
     final ctrl = TextEditingController(text: t?.text ?? '');
-    var size = t?.size ?? 16.0;
+    // The slider shows the size as it looks on screen right now; the stored size follows the zoom like the pen.
+    var size = t == null ? 16.0 : (t.size * zoom).clamp(10.0, 48.0);
+    var sizeMoved = false;
     const del = '\u0000delete';
     final res = await showDialog<String>(
         context: context,
@@ -369,7 +474,10 @@ class _EditorState extends State<EditorScreen> {
                             const Text('Größe'),
                             Expanded(
                                 child: Slider(value: size, min: 10, max: 48, divisions: 19, label: '${size.round()}',
-                                    onChanged: (v) => set(() => size = v))),
+                                    onChanged: (v) => set(() {
+                                          size = v;
+                                          sizeMoved = true;
+                                        }))),
                           ]),
                         ])),
                     actions: [
@@ -379,13 +487,17 @@ class _EditorState extends State<EditorScreen> {
                     ])));
     if (res == null || !mounted) return;
     final color = colors[pen == 'highlighter' ? 'ballpoint' : pen]!;
+    final newSize = t != null && !sizeMoved ? t.size : size / zoom;
     _edit(() {
       if (res == del || res.trim().isEmpty) {
         if (t != null) page.texts = page.texts.where((x) => x.id != t.id).toList();
       } else if (t == null) {
-        page.texts = [...page.texts, TextBox(id: newId(), x: at.dx, y: at.dy, text: res, size: size, color: color)];
+        page.texts = [
+          ...page.texts,
+          TextBox(id: newId(), x: at.dx, y: at.dy, text: res, size: newSize, color: color, width: 260 / zoom)
+        ];
       } else {
-        page.texts = [for (final x in page.texts) x.id == t.id ? x.copyWith(text: res, size: size) : x];
+        page.texts = [for (final x in page.texts) x.id == t.id ? x.copyWith(text: res, size: newSize) : x];
       }
     });
   }
@@ -410,7 +522,7 @@ class _EditorState extends State<EditorScreen> {
       frame.image.dispose();
       codec.dispose();
       final asset = await widget.store.importAsset(f.path!);
-      final w = math.min(page.w * 0.6, iw);
+      final w = endless ? 300 / zoom : math.min(page.w * 0.6, iw);
       final box = ImageBox(id: newId(), asset: asset,
           rect: Rect.fromCenter(center: toPage(viewport.center(Offset.zero)), width: w, height: w * ih / iw));
       _edit(() => page.images = [...page.images, box]);
@@ -424,39 +536,49 @@ class _EditorState extends State<EditorScreen> {
   }
 
   // ---------- PDF background ----------
-  String? _pdfKey(NotePage p) => p.pdf == null ? null : '${p.pdf}#${p.pdfPage}';
+  // PDF pages are shown as images; once zoomed in, a sharper one is rendered.
+  final _pdfLoading = <String>{};
+  int get _pdfRes => scale * dpr > 2.6 ? 5 : 2; // image pixels per page unit
+  String? _pdfKey(NotePage p, int res) => p.pdf == null ? null : '${p.pdf}#${p.pdfPage}@$res';
+  ui.Image? _pdfImage(NotePage p) => pdfImages[_pdfKey(p, 5)] ?? pdfImages[_pdfKey(p, 2)];
 
   Future<void> _loadPdf() async {
-    final pg = page, key = _pdfKey(pg);
-    if (key == null || pdfImages.containsKey(key)) return;
+    final pg = page, res = _pdfRes, key = _pdfKey(pg, res);
+    if (key == null || pdfImages.containsKey(key) || !_pdfLoading.add(key)) return;
     try {
       final doc = pdfDocs[pg.pdf!] ??= await PdfDocument.openFile(widget.store.assetPath(pg.pdf!));
-      final img = await doc.pages[pg.pdfPage!].render(fullWidth: pg.w * 2.5, fullHeight: pg.h * 2.5, backgroundColor: 0xFFFFFFFF);
+      final img = await doc.pages[pg.pdfPage!].render(fullWidth: pg.w * res, fullHeight: pg.h * res, backgroundColor: 0xFFFFFFFF);
       if (img == null) return;
       final image = await img.createImage();
       img.dispose();
       if (!mounted) return image.dispose();
-      if (pdfImages.length >= 4) pdfImages.remove(pdfImages.keys.first)?.dispose();
+      if (pdfImages.length >= 3) pdfImages.remove(pdfImages.keys.first)?.dispose();
       setState(() => pdfImages[key] = image);
     } catch (e) {
       if (mounted) snack(context, 'PDF-Seite konnte nicht geladen werden: $e');
+    } finally {
+      _pdfLoading.remove(key);
     }
   }
 
   // ---------- pages ----------
   void _go(int i) {
     if (i < 0 || i >= nb!.pages.length) return;
-    setState(() {
-      index = i;
-      selected = null;
-    });
+    setState(() => index = i);
+    _pageChanged();
+  }
+
+  void _pageChanged() {
+    tiles?.dispose();
+    tiles = endless ? TileCache(tick.ping) : null;
+    selected = null;
     _fit();
     _loadPdf();
   }
 
   void _addPage() {
     final cur = page;
-    nb!.pages.insert(index + 1, NotePage(paper: cur.pdf != null ? 'blank' : cur.paper, w: cur.w, h: cur.h));
+    nb!.pages.insert(index + 1, NotePage(paper: cur.pdf != null ? 'blank' : cur.paper, w: cur.w, h: cur.h, infinite: cur.infinite));
     widget.store.changed(nb!);
     _go(index + 1);
   }
@@ -476,7 +598,11 @@ class _EditorState extends State<EditorScreen> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final narrow = MediaQuery.sizeOf(context).width < 600; // phone: fewer buttons in the top bar, rest in the menu
+    dpr = MediaQuery.devicePixelRatioOf(context);
+    final fitLabel = nb != null && endless ? 'Alles zeigen' : 'Ganze Seite zeigen';
+    void zoomStep(double f) => _zoomAround(viewport.center(Offset.zero), viewport.center(Offset.zero), f);
     return Scaffold(
+      resizeToAvoidBottomInset: false, // the keyboard of the text dialog must not move the page
       appBar: AppBar(
         title: Text(widget.meta.name),
         titleSpacing: narrow ? 0 : null,
@@ -491,7 +617,7 @@ class _EditorState extends State<EditorScreen> {
                 IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Nächste Seite',
                     onPressed: index < nb!.pages.length - 1 ? () => _go(index + 1) : null),
                 if (!narrow) IconButton(icon: const Icon(Icons.note_add_outlined), tooltip: 'Seite einfügen', onPressed: _addPage),
-                if (!narrow) IconButton(icon: const Icon(Icons.fit_screen), tooltip: 'Ganze Seite zeigen (Strg+0)', onPressed: _fit),
+                if (!narrow) IconButton(icon: const Icon(Icons.fit_screen), tooltip: '$fitLabel (Strg+0)', onPressed: _fit),
                 PopupMenuButton<String>(
                   tooltip: 'Seite',
                   onSelected: (v) {
@@ -506,7 +632,7 @@ class _EditorState extends State<EditorScreen> {
                   },
                   itemBuilder: (_) => [
                     if (narrow) const PopupMenuItem(value: 'add', child: Text('Seite einfügen')),
-                    if (narrow) const PopupMenuItem(value: 'fit', child: Text('Ganze Seite zeigen')),
+                    if (narrow) PopupMenuItem(value: 'fit', child: Text(fitLabel)),
                     if (narrow) const PopupMenuDivider(),
                     for (final (v, label) in [('blank', 'Blanko'), ('lined', 'Liniert'), ('grid', 'Kariert'), ('dots', 'Punktiert')])
                       CheckedPopupMenuItem(value: v, checked: page.paper == v, child: Text('Papier: $label')),
@@ -527,6 +653,11 @@ class _EditorState extends State<EditorScreen> {
                 const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _go(index - 1),
                 const SingleActivator(LogicalKeyboardKey.arrowRight): () => _go(index + 1),
                 const SingleActivator(LogicalKeyboardKey.digit0, control: true): _fit,
+                const SingleActivator(LogicalKeyboardKey.equal, control: true): () => zoomStep(1.25),
+                const SingleActivator(LogicalKeyboardKey.bracketRight, control: true): () => zoomStep(1.25), // "+" on German keyboards
+                const SingleActivator(LogicalKeyboardKey.numpadAdd, control: true): () => zoomStep(1.25),
+                const SingleActivator(LogicalKeyboardKey.minus, control: true): () => zoomStep(0.8),
+                const SingleActivator(LogicalKeyboardKey.numpadSubtract, control: true): () => zoomStep(0.8),
               },
               child: Focus(
                 autofocus: true,
@@ -536,8 +667,9 @@ class _EditorState extends State<EditorScreen> {
                   const Divider(height: 1),
                   Expanded(child: LayoutBuilder(builder: (context, c) {
                     if (c.biggest != viewport) {
+                      final old = viewport;
                       viewport = c.biggest;
-                      WidgetsBinding.instance.addPostFrameCallback((_) => _fit());
+                      WidgetsBinding.instance.addPostFrameCallback((_) => _viewportChanged(old));
                     }
                     return MouseRegion(
                       cursor: mode == Mode.select ? SystemMouseCursors.move : SystemMouseCursors.precise,
@@ -559,15 +691,26 @@ class _EditorState extends State<EditorScreen> {
                             color: cs.surfaceContainerHighest,
                             child: SizedBox.expand(
                               child: Stack(children: [
-                                // Positioned without a size = unconstrained, so the page keeps its full
-                                // size even when the screen area is smaller (the transform does the scaling).
+                                if (endless)
+                                  ..._endlessLayers()
+                                else
+                                  _transformed(_pageWidget()),
+                                // Zoom level, shown briefly while zooming; tap = back to the overview.
                                 Positioned(
+                                  top: 12,
                                   left: 0,
-                                  top: 0,
-                                  child: ValueListenableBuilder<Matrix4>(
-                                      valueListenable: view,
-                                      builder: (context, m, child) => Transform(transform: m, child: child),
-                                      child: _pageWidget()),
+                                  right: 0,
+                                  child: Center(
+                                    child: ValueListenableBuilder<String?>(
+                                      valueListenable: zoomLabel,
+                                      builder: (context, label, _) => AnimatedOpacity(
+                                        opacity: label == null ? 0 : 1,
+                                        duration: const Duration(milliseconds: 200),
+                                        child: ActionChip(label: Text(label ?? ''), onPressed: label == null ? null : _fit,
+                                            tooltip: fitLabel),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ]),
                             ),
@@ -582,15 +725,47 @@ class _EditorState extends State<EditorScreen> {
     );
   }
 
+  /// Puts [child] (in page units) under the view transform. Positioned without a size = unconstrained,
+  /// so the page keeps its full size even when the screen area is smaller.
+  Widget _transformed(Widget child) => Positioned(
+        left: 0,
+        top: 0,
+        child: ValueListenableBuilder<Matrix4>(
+            valueListenable: view, builder: (context, m, child) => Transform(transform: m, child: child), child: child),
+      );
+
+  /// Endless sheet, bottom to top: paper, images, ink tiles, text, the stroke being drawn.
+  /// Paper and ink are painted in screen space for the current view; images and text are moved by the transform.
+  List<Widget> _endlessLayers() {
+    final pg = page;
+    Widget objects(List<Widget> children) =>
+        _transformed(SizedBox(width: 1, height: 1, child: Stack(clipBehavior: Clip.none, children: children)));
+    return [
+      Positioned.fill(child: CustomPaint(painter: _EndlessPainter(this, ink: false))),
+      objects([
+        for (final i in pg.images)
+          Positioned.fromRect(
+              rect: i.rect,
+              child: Image.file(File(widget.store.assetPath(i.asset)), fit: BoxFit.fill,
+                  errorBuilder: (_, _, _) => const ColoredBox(color: Color(0x22000000)))),
+      ]),
+      Positioned.fill(child: CustomPaint(painter: _EndlessPainter(this, ink: true))),
+      objects([
+        for (final t in pg.texts) Positioned(left: t.x, top: t.y, width: t.width, child: Text(t.text, style: _textStyle(t))),
+      ]),
+      Positioned.fill(child: CustomPaint(painter: _LivePainter(this))),
+    ];
+  }
+
   Widget _pageWidget() {
-    final pg = page, key = _pdfKey(pg);
+    final pg = page;
     return DecoratedBox(
       decoration: const BoxDecoration(boxShadow: [BoxShadow(color: Color(0x40000000), blurRadius: 10)]),
       child: SizedBox(
         width: pg.w,
         height: pg.h,
         child: ClipRect(child: Stack(children: [
-          Positioned.fill(child: RepaintBoundary(child: CustomPaint(painter: PaperPainter(pg, key == null ? null : pdfImages[key])))),
+          Positioned.fill(child: RepaintBoundary(child: CustomPaint(painter: PaperPainter(pg, _pdfImage(pg))))),
           for (final i in pg.images)
             Positioned.fromRect(
                 rect: i.rect,
@@ -664,9 +839,13 @@ class _LivePainter extends CustomPainter {
 
   @override
   void paint(Canvas c, Size size) {
+    if (s.endless) { // endless sheet: this painter fills the screen, so move into page units first
+      c.translate(s.offset.dx, s.offset.dy);
+      c.scale(s.scale);
+    }
     if (s.live != null) paintStroke(c, s.live!, complete: false);
     if (s.eraserAt != null) {
-      c.drawCircle(s.eraserAt!, s.eraserSize,
+      c.drawCircle(s.eraserAt!, s.eraserSize / s.zoom,
           Paint()..style = PaintingStyle.stroke..strokeWidth = 1.5 / s.scale..color = const Color(0xFF888888));
     }
     final r = s.selected == null ? null : s._rectOf(s.selected!);
@@ -681,4 +860,23 @@ class _LivePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_LivePainter old) => true;
+}
+
+/// Endless sheet in screen space: the paper pattern ([ink] false) or the ink tiles ([ink] true).
+class _EndlessPainter extends CustomPainter {
+  _EndlessPainter(this.s, {required this.ink}) : super(repaint: s.tick);
+  final _EditorState s;
+  final bool ink;
+
+  @override
+  void paint(Canvas c, Size size) {
+    if (!ink) return paintEndlessPaper(c, size, s.page.paper, s.offset, s.scale);
+    final t = s.tiles;
+    if (t == null) return;
+    t.setStrokes(s.page.strokes);
+    t.paint(c, size, s.offset, s.scale, s.dpr);
+  }
+
+  @override
+  bool shouldRepaint(_EndlessPainter old) => true;
 }
