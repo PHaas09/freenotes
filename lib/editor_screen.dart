@@ -674,6 +674,7 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
                     return MouseRegion(
                       cursor: mode == Mode.select ? SystemMouseCursors.move : SystemMouseCursors.precise,
                       child: Listener(
+                        key: const Key('canvas'),
                         onPointerDown: _onDown,
                         onPointerMove: _onMove,
                         onPointerUp: _onUp,
