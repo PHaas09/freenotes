@@ -1,0 +1,39 @@
+# Builds the iPhone app on a free GitHub macOS machine (no Mac needed).
+# The .ipa is unsigned: AltStore / Sideloadly sign it with the user's own Apple ID when installing.
+name: iPhone-App bauen
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.50.0 # same version as the Windows/Android builds
+          cache: true
+      - run: flutter pub get
+      - run: flutter test
+      - run: flutter build ios --release --no-codesign
+      - name: IPA packen
+        run: |
+          mkdir Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -qr "FreeNotes-${GITHUB_REF_NAME}.ipa" Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeNotes-iPhone
+          path: '*.ipa'
+      - name: An den Release anhängen
+        if: startsWith(github.ref, 'refs/tags/')
+        run: gh release upload "$GITHUB_REF_NAME" FreeNotes-*.ipa --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

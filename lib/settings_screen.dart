@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -93,6 +95,8 @@ class _SettingsState extends State<SettingsScreen> {
   }
 
   Future<void> _changeLocation() async {
+    // Desktop only (button is hidden on phones), and we need a real folder path here, not a content:// URI.
+    // ignore: deprecated_member_use
     final picked = await FilePicker.getDirectoryPath(dialogTitle: 'Neuen Speicherort für FreeNotes wählen');
     if (picked == null || !mounted) return;
     if (!await confirm(context, 'Notizen verschieben?',
@@ -163,7 +167,8 @@ class _SettingsState extends State<SettingsScreen> {
             const SizedBox(height: 4),
             SelectableText(widget.store.dir.path),
             const SizedBox(height: 8),
-            Align(
+            // Phones keep app data in the app's own storage; moving it needs a restart, which only desktop can do.
+            if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) Align(
                 alignment: Alignment.centerLeft,
                 child: OutlinedButton.icon(
                     icon: const Icon(Icons.folder_outlined), label: const Text('Speicherort ändern…'), onPressed: _changeLocation)),

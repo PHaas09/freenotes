@@ -475,21 +475,23 @@ class _EditorState extends State<EditorScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final narrow = MediaQuery.sizeOf(context).width < 600; // phone: fewer buttons in the top bar, rest in the menu
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.meta.name),
+        titleSpacing: narrow ? 0 : null,
         actions: nb == null
             ? null
             : [
                 IconButton(icon: const Icon(Icons.undo), tooltip: 'Rückgängig (Strg+Z)', onPressed: _h.undo.isEmpty ? null : () => _step(_h.undo, _h.redo)),
                 IconButton(icon: const Icon(Icons.redo), tooltip: 'Wiederholen (Strg+Y)', onPressed: _h.redo.isEmpty ? null : () => _step(_h.redo, _h.undo)),
-                const SizedBox(width: 12),
+                if (!narrow) const SizedBox(width: 12),
                 IconButton(icon: const Icon(Icons.chevron_left), tooltip: 'Vorherige Seite', onPressed: index > 0 ? () => _go(index - 1) : null),
                 Center(child: Text('${index + 1} / ${nb!.pages.length}')),
                 IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Nächste Seite',
                     onPressed: index < nb!.pages.length - 1 ? () => _go(index + 1) : null),
-                IconButton(icon: const Icon(Icons.note_add_outlined), tooltip: 'Seite einfügen', onPressed: _addPage),
-                IconButton(icon: const Icon(Icons.fit_screen), tooltip: 'Ganze Seite zeigen (Strg+0)', onPressed: _fit),
+                if (!narrow) IconButton(icon: const Icon(Icons.note_add_outlined), tooltip: 'Seite einfügen', onPressed: _addPage),
+                if (!narrow) IconButton(icon: const Icon(Icons.fit_screen), tooltip: 'Ganze Seite zeigen (Strg+0)', onPressed: _fit),
                 PopupMenuButton<String>(
                   tooltip: 'Seite',
                   onSelected: (v) {
@@ -497,10 +499,15 @@ class _EditorState extends State<EditorScreen> {
                       _deletePage();
                       return;
                     }
+                    if (v == 'add') return _addPage();
+                    if (v == 'fit') return _fit();
                     setState(() => page.paper = v);
                     widget.store.changed(nb!);
                   },
                   itemBuilder: (_) => [
+                    if (narrow) const PopupMenuItem(value: 'add', child: Text('Seite einfügen')),
+                    if (narrow) const PopupMenuItem(value: 'fit', child: Text('Ganze Seite zeigen')),
+                    if (narrow) const PopupMenuDivider(),
                     for (final (v, label) in [('blank', 'Blanko'), ('lined', 'Liniert'), ('grid', 'Kariert'), ('dots', 'Punktiert')])
                       CheckedPopupMenuItem(value: v, checked: page.paper == v, child: Text('Papier: $label')),
                     const PopupMenuDivider(),
@@ -552,10 +559,16 @@ class _EditorState extends State<EditorScreen> {
                             color: cs.surfaceContainerHighest,
                             child: SizedBox.expand(
                               child: Stack(children: [
-                                ValueListenableBuilder<Matrix4>(
-                                    valueListenable: view,
-                                    builder: (context, m, child) => Transform(transform: m, child: child),
-                                    child: _pageWidget()),
+                                // Positioned without a size = unconstrained, so the page keeps its full
+                                // size even when the screen area is smaller (the transform does the scaling).
+                                Positioned(
+                                  left: 0,
+                                  top: 0,
+                                  child: ValueListenableBuilder<Matrix4>(
+                                      valueListenable: view,
+                                      builder: (context, m, child) => Transform(transform: m, child: child),
+                                      child: _pageWidget()),
+                                ),
                               ]),
                             ),
                           ),
@@ -576,7 +589,7 @@ class _EditorState extends State<EditorScreen> {
       child: SizedBox(
         width: pg.w,
         height: pg.h,
-        child: Stack(children: [
+        child: ClipRect(child: Stack(children: [
           Positioned.fill(child: RepaintBoundary(child: CustomPaint(painter: PaperPainter(pg, key == null ? null : pdfImages[key])))),
           for (final i in pg.images)
             Positioned.fromRect(
@@ -586,7 +599,7 @@ class _EditorState extends State<EditorScreen> {
           Positioned.fill(child: RepaintBoundary(child: CustomPaint(painter: InkPainter(pg.strokes)))),
           for (final t in pg.texts) Positioned(left: t.x, top: t.y, width: t.width, child: Text(t.text, style: _textStyle(t))),
           Positioned.fill(child: CustomPaint(painter: _LivePainter(this))),
-        ]),
+        ])),
       ),
     );
   }

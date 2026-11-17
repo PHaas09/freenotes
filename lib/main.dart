@@ -66,7 +66,8 @@ class _FreeNotesAppState extends State<FreeNotesApp> {
   void initState() {
     super.initState();
     _life = AppLifecycleListener(
-      onPause: widget.store.flush, // phone: app goes to background
+      // Phone: the app goes to the background and may be closed by the system at any time.
+      onPause: () => widget.store.flush().then((_) => widget.sync.run()),
       onInactive: widget.store.flush,
       onExitRequested: () async {
         // Save everything and push it to the NAS before the window closes (max. 8 s).

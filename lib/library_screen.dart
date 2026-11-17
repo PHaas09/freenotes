@@ -119,9 +119,10 @@ class _LibraryState extends State<LibraryScreen> {
         return Scaffold(
           appBar: AppBar(
             title: const Text('FreeNotes'),
+            titleSpacing: wide ? null : 0,
             actions: [
               SizedBox(
-                width: wide ? 280 : 160,
+                width: wide ? 280 : 120, // phone: leave room for the title
                 child: TextField(
                   decoration: InputDecoration(
                       hintText: 'Suchen…', prefixIcon: const Icon(Icons.search), isDense: true,
