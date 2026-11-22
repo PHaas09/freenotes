@@ -1,4 +1,3 @@
-import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -9,30 +8,36 @@ import 'model.dart';
 
 typedef TileKey = (int z, int x, int y);
 
+/// Draws the square [world] of page space at [unit] pixels per page unit into a [px] x [px] image;
+/// null if there is nothing to draw there.
+typedef TileRenderer = Future<ui.Image?> Function(Rect world, double unit, int px);
+
 class _Tile {
   _Tile(this.img, this.ver, this.dirtyVer);
-  final ui.Image? img; // null = nothing written in this tile
-  final int ver; // strokes version the image was drawn from
-  int dirtyVer; // strokes version of the last change inside the tile; newer than [ver] = redraw
+  final ui.Image? img; // null = nothing in this tile
+  final int ver; // content version the image was drawn from
+  int dirtyVer; // version of the last change inside the tile; newer than [ver] = redraw
 }
 
-/// Draws the strokes of an endless sheet as cached image tiles, like an online map: every zoom level
-/// has its own 512 px tiles, drawn once in the background and reused while panning and zooming.
-/// A change only redraws the tiles it touches, so the sheet stays smooth however much is on it.
+/// Draws page content as cached image tiles, like an online map: every zoom level has its own 512 px
+/// tiles, drawn once in the background and reused while panning and zooming. Used for the ink of the
+/// endless sheet (drawn by the Rust core) and for sharp PDF pages when zoomed in.
 class TileCache {
-  TileCache(this.onChange);
+  TileCache(this.onChange, this.render, {this.parallel = 3, this.ready});
   final VoidCallback onChange;
+  final TileRenderer render;
+  final int parallel; // tiles drawn at the same time
+  final bool Function()? ready; // tiles wait until the content is loaded
   static const px = 512;
   static const maxTiles = 96; // about 100 MB of images
   static final _full = Rect.fromLTWH(0, 0, px.toDouble(), px.toDouble());
 
   final _tiles = <TileKey, _Tile>{}; // keeps insertion order: least recently used first
-  final _added = LinkedHashMap<Stroke, int>.identity(); // new strokes -> version; drawn as lines until their tiles catch up
-  List<Stroke> _strokes = const [];
+  final _added = Map<Stroke, int>.identity(); // new strokes -> version; drawn as lines until their tiles catch up
   int _ver = 0;
   final _queue = <TileKey>[];
-  TileKey? _rendering;
-  bool _renderingDirty = false, _disposed = false;
+  final _rendering = <TileKey, bool>{}; // tile -> changed while being drawn
+  bool _disposed = false;
 
   static double tileSize(int z) => px / math.pow(2.0, z);
   static Rect tileRect(TileKey k) {
@@ -43,32 +48,17 @@ class TileCache {
   /// Zoom level whose tiles have at least as many pixels as the screen shows.
   static int levelFor(double pxPerUnit) => (math.log(pxPerUnit) / math.ln2).ceil().clamp(-30, 30);
 
-  /// Tells the cache the current strokes. Lists are replaced on every change, never edited, so the
-  /// difference to the previous list is what changed. [removed] skips that search (used by the eraser).
-  void setStrokes(List<Stroke> s, {List<Stroke>? removed}) {
-    if (identical(s, _strokes)) return;
-    final old = _strokes;
-    _strokes = s;
+  /// Strokes were added or removed: redraw the tiles they touch; new strokes show at once as lines.
+  void changed(List<Stroke> added, List<Stroke> removed) {
+    if (_tiles.isEmpty && _rendering.isEmpty) return; // nothing drawn yet (e.g. sheet just opened)
     _ver++;
-    Iterable<Stroke> added = const [], gone = removed ?? const [];
-    if (_tiles.isEmpty && _rendering == null) {
-      // nothing drawn yet (e.g. sheet just opened): no tile to update
-    } else if (removed != null) {
-      // eraser: only removals
-    } else if (s.length >= old.length && (old.isEmpty || identical(s[old.length - 1], old.last))) {
-      added = s.sublist(old.length); // the usual case: strokes appended
-    } else {
-      final a = Set<Stroke>.identity()..addAll(old), b = Set<Stroke>.identity()..addAll(s);
-      added = [for (final x in s) if (!a.contains(x)) x];
-      gone = [for (final x in old) if (!b.contains(x)) x];
+    for (final s in added) {
+      _added[s] = _ver;
+      _invalidate(s.bounds);
     }
-    for (final x in added) {
-      _added[x] = _ver;
-      _invalidate(strokeBounds(x));
-    }
-    for (final x in gone) {
-      _added.remove(x);
-      _invalidate(strokeBounds(x));
+    for (final s in removed) {
+      _added.remove(s);
+      _invalidate(s.bounds);
     }
     while (_added.length > 300) {
       _added.remove(_added.keys.first);
@@ -79,10 +69,12 @@ class TileCache {
     for (final e in _tiles.entries) {
       if (tileRect(e.key).overlaps(b)) e.value.dirtyVer = _ver;
     }
-    if (_rendering != null && tileRect(_rendering!).overlaps(b)) _renderingDirty = true;
+    for (final k in _rendering.keys) {
+      if (tileRect(k).overlaps(b)) _rendering[k] = true;
+    }
   }
 
-  /// Paints the visible part of the sheet. [offset]/[scale]: screen = offset + world * scale.
+  /// Paints the visible part. [offset]/[scale]: screen = offset + page * scale.
   void paint(Canvas c, Size size, Offset offset, double scale, double dpr) {
     if (scale <= 0 || size.isEmpty) return;
     final z = levelFor(scale * dpr), t = tileSize(z);
@@ -101,7 +93,7 @@ class TileCache {
             snap(offset.dx + (x + 1) * t * scale), snap(offset.dy + (y + 1) * t * scale));
         final tile = _tiles.remove(k);
         if (tile != null) _tiles[k] = tile; // mark as recently used
-        if (tile == null || tile.ver < tile.dirtyVer) _queue.add(k);
+        if ((tile == null || tile.ver < tile.dirtyVer) && !_rendering.containsKey(k)) _queue.add(k);
         if (tile == null) {
           _fallback(c, k, dst, paint);
         } else if (tile.img != null) {
@@ -113,12 +105,13 @@ class TileCache {
     _queue.sort((a, b) => (tileRect(a).center - mid).distanceSquared.compareTo((tileRect(b).center - mid).distanceSquared));
     _kick();
 
+    if (_added.isEmpty) return;
     // Strokes newer than the tile under them: draw directly, so nothing flickers while tiles update.
     c.save();
     c.translate(offset.dx, offset.dy);
     c.scale(scale);
     for (final e in _added.entries) {
-      final b = strokeBounds(e.key);
+      final b = e.key.bounds;
       if (!b.overlaps(view)) continue;
       if (visible.any((k) => tileRect(k).overlaps(b) && (_tiles[k]?.ver ?? -1) < e.value)) {
         paintStrokeLod(c, e.key, scale * dpr);
@@ -145,37 +138,25 @@ class TileCache {
     }
   }
 
-  /// Renders one tile at a time between frames; each finished tile triggers a repaint, which queues the rest.
+  /// Starts drawing queued tiles (several at once); each finished tile triggers a repaint, which queues the rest.
   void _kick() {
-    if (_rendering != null || _queue.isEmpty || _disposed) return;
-    final k = _queue.removeAt(0);
-    _rendering = k;
-    _renderingDirty = false;
-    Future(() => _render(k)).whenComplete(() {
-      _rendering = null;
-      if (!_disposed) onChange();
-    });
+    if (_disposed || (ready != null && !ready!())) return;
+    while (_rendering.length < parallel && _queue.isNotEmpty) {
+      final k = _queue.removeAt(0);
+      _rendering[k] = false;
+      _render(k).whenComplete(() {
+        _rendering.remove(k);
+        if (!_disposed) onChange();
+      });
+    }
   }
 
   Future<void> _render(TileKey k) async {
-    final r = tileRect(k), unit = px / r.width, ver = _ver;
-    final hits = [for (final s in _strokes) if (strokeBounds(s).overlaps(r)) s];
-    ui.Image? img;
-    if (hits.isNotEmpty) {
-      final rec = ui.PictureRecorder();
-      final c = Canvas(rec)
-        ..scale(unit)
-        ..translate(-r.left, -r.top);
-      for (final s in hits) {
-        paintStrokeLod(c, s, unit);
-      }
-      final pic = rec.endRecording();
-      img = await pic.toImage(px, px);
-      pic.dispose();
-    }
+    final r = tileRect(k), ver = _ver;
+    final img = await render(r, px / r.width, px);
     if (_disposed) return img?.dispose();
     _tiles.remove(k)?.img?.dispose();
-    _tiles[k] = _Tile(img, ver, _renderingDirty ? _ver : 0);
+    _tiles[k] = _Tile(img, ver, _rendering[k] == true ? _ver : 0);
     while (_tiles.length > maxTiles) {
       _tiles.remove(_tiles.keys.first)?.img?.dispose();
     }

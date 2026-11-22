@@ -8,6 +8,8 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>FreeNotes</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>FreeNotes sucht deine NAS im Heimnetz, um deine Notizen dort zu speichern.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>FreeNotes braucht Zugriff auf deine Fotos, um Bilder in Notizen einzufügen.</string>
 	<key>CFBundleExecutable</key>

@@ -28,8 +28,26 @@ SyncAction decide(int? local, int? remote, int? base) {
 /// NAS connection settings. Only ever stored on this device, never in the code.
 class NasConfig {
   String url = '', user = '', password = '';
-  bool selfSigned = false; // accept the NAS's own (self-signed) HTTPS certificate
+  bool selfSigned = false; // older manual setting: accept any certificate of this host
+  /// The NAS's own HTTPS certificate (base64), remembered on first contact by the NAS assistant.
+  /// From then on only exactly this certificate is accepted, so nobody can pose as the NAS.
+  String pin = '';
+  /// Assistant only: accept the certificate seen now and remember it in [pin].
+  bool trustNew = false;
   bool get enabled => url.trim().isNotEmpty;
+}
+
+/// Whether to accept a certificate the system doesn't trust: only from the NAS's own address, and then
+/// only the one remembered on first contact (or, during the assistant, the one seen now, which gets remembered).
+bool trustCertificate(NasConfig cfg, String nasHost, String host, List<int> der) {
+  if (host != nasHost) return false;
+  final seen = base64.encode(der);
+  if (cfg.pin.isNotEmpty) return seen == cfg.pin;
+  if (cfg.trustNew) {
+    cfg.pin = seen;
+    return true;
+  }
+  return cfg.selfSigned;
 }
 
 /// Minimal WebDAV client: GET, PUT, DELETE and MKCOL are all the sync needs.
@@ -38,7 +56,8 @@ class NasClient {
       : _base = Uri.parse(cfg.url.trim().endsWith('/') ? cfg.url.trim() : '${cfg.url.trim()}/'),
         _auth = 'Basic ${base64.encode(utf8.encode('${cfg.user}:${cfg.password}'))}' {
     final hc = HttpClient()..connectionTimeout = const Duration(seconds: 10);
-    if (cfg.selfSigned) hc.badCertificateCallback = (cert, host, port) => host == _base.host;
+    // Called only for certificates the system doesn't trust, e.g. the NAS's self-made one.
+    hc.badCertificateCallback = (cert, host, port) => trustCertificate(cfg, _base.host, host, cert.der);
     _c = IOClient(hc);
   }
   final Uri _base;
@@ -49,7 +68,11 @@ class NasClient {
     final req = http.Request(method, _base.resolve(rel))..headers['Authorization'] = _auth;
     if (headers != null) req.headers.addAll(headers);
     if (body != null) req.bodyBytes = body;
-    return http.Response.fromStream(await _c.send(req).timeout(const Duration(seconds: 60)));
+    try {
+      return await http.Response.fromStream(await _c.send(req).timeout(const Duration(seconds: 60)));
+    } on HandshakeException {
+      throw 'Das Sicherheitszertifikat der NAS passt nicht (mehr). Bitte den NAS-Assistenten erneut ausführen.';
+    }
   }
 
   /// Throws a readable error naming the step that failed, e.g. "NAS-Fehler 405 bei PUT library.json".
@@ -128,6 +151,7 @@ class SyncService {
         cfg.url = j['url'] as String? ?? '';
         cfg.user = j['user'] as String? ?? '';
         cfg.selfSigned = j['selfSigned'] == true;
+        cfg.pin = j['pin'] as String? ?? '';
       }
       cfg.password = await _secure.read(key: 'nas_password') ?? '';
     } catch (e) {
@@ -139,7 +163,7 @@ class SyncService {
   Future<void> saveConfig() async {
     final f = await _settingsFile();
     await f.parent.create(recursive: true);
-    await f.writeAsString(jsonEncode({'url': cfg.url.trim(), 'user': cfg.user, 'selfSigned': cfg.selfSigned}));
+    await f.writeAsString(jsonEncode({'url': cfg.url.trim(), 'user': cfg.user, 'selfSigned': cfg.selfSigned, 'pin': cfg.pin}));
     await _secure.write(key: 'nas_password', value: cfg.password);
   }
 

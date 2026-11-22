@@ -5,6 +5,8 @@ import 'package:freenotes/store.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
+import 'rust_init.dart';
+
 class _FakePaths extends PathProviderPlatform {
   _FakePaths(this.root);
   final String root;
@@ -15,6 +17,7 @@ class _FakePaths extends PathProviderPlatform {
 }
 
 void main() {
+  setUpAll(initRust);
   late Directory tmp;
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('freenotes_test');

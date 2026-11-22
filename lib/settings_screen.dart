@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'dialogs.dart';
 import 'store.dart';
+import 'nas_wizard.dart';
 import 'sync.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -24,6 +25,8 @@ class _SettingsState extends State<SettingsScreen> {
   bool testing = false;
 
   Future<void> _save() async {
+    // another NAS: forget the certificate remembered for the old one
+    if (Uri.tryParse(url.text.trim())?.host != Uri.tryParse(widget.sync.cfg.url)?.host) widget.sync.cfg.pin = '';
     final cfg = widget.sync.cfg
       ..url = url.text.trim()
       ..user = user.text.trim()
@@ -132,6 +135,23 @@ class _SettingsState extends State<SettingsScreen> {
             const Text('Deine Notizbücher werden automatisch auf deiner NAS gespeichert: beim Start, alle 2 Minuten, '
                 'beim Schließen eines Notizbuchs und beim Beenden der App. Adresse und Passwort bleiben nur auf diesem Gerät.'),
             const SizedBox(height: 16),
+            FilledButton.icon(
+              icon: const Icon(Icons.wifi_find),
+              label: const Text('NAS automatisch finden und verbinden'),
+              onPressed: () async {
+                await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NasWizard(sync: widget.sync)));
+                if (!mounted) return;
+                final c = widget.sync.cfg;
+                setState(() {
+                  url.text = c.url;
+                  user.text = c.user;
+                  pass.text = c.password;
+                  selfSigned = c.selfSigned;
+                });
+              },
+            ),
+            const SizedBox(height: 16),
+            Text('Oder von Hand einrichten:', style: t.bodySmall),
             TextField(
                 controller: url,
                 onChanged: (_) => setState(() {}),

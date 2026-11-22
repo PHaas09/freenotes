@@ -11,6 +11,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
+import 'rust_init.dart';
+
 class _FakePaths extends PathProviderPlatform {
   _FakePaths(this.root);
   final String root;
@@ -67,6 +69,7 @@ Future<void> pinch(WidgetTester tester, double from, double to, {Offset shift = 
 }
 
 void main() {
+  setUpAll(initRust);
   testWidgets('endless sheet: pinch zoom and pen width that follows the zoom', (tester) async {
     final s = await openEditor(tester, endless: true);
     expect(s.zoom, closeTo(1, 1e-9));

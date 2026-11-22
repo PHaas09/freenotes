@@ -1,23 +1,29 @@
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:material_ui/material_ui.dart';
-import 'package:perfect_freehand/perfect_freehand.dart';
 
 import 'model.dart';
+import 'src/rust/api/ink.dart' as rust;
 
+/// What a pen looks like in the toolbar; its shape (width, pressure, taper) is computed by the Rust core.
 class PenType {
-  const PenType(this.name, this.icon, this.thinning, this.alpha, this.sizes);
+  const PenType(this.name, this.icon, this.alpha, this.sizes);
   final String name;
   final IconData icon;
-  final double thinning, alpha;
+  final double alpha;
   final List<double> sizes;
 }
 
+/// Toolbar order. The keys are stored in notebooks (see [penKinds]).
 const penTypes = {
-  'ballpoint': PenType('Kugelschreiber', Icons.edit, 0.15, 1, [1.2, 2, 3]),
-  'fountain': PenType('Füller', Icons.draw, 0.65, 1, [1.6, 2.6, 4]),
-  'pencil': PenType('Bleistift', Icons.gesture, 0.3, 0.75, [1, 1.8, 3]),
-  'highlighter': PenType('Textmarker', Icons.border_color, 0, 0.35, [10, 16, 24]),
+  'ballpoint': PenType('Kugelschreiber', Icons.edit, 1, [1.2, 2, 3]),
+  'fountain': PenType('Füller', Icons.draw, 1, [1.6, 2.6, 4]),
+  'fineliner': PenType('Fineliner', Icons.create, 1, [0.8, 1.4, 2.2]),
+  'brush': PenType('Pinsel', Icons.brush, 1, [3, 6, 10]),
+  'calligraphy': PenType('Kalligrafie', Icons.history_edu, 1, [3, 5, 8]),
+  'pencil': PenType('Bleistift', Icons.gesture, 0.75, [1, 1.8, 3]),
+  'highlighter': PenType('Textmarker', Icons.border_color, 0.35, [10, 16, 24]),
 };
 
 const palette = [
@@ -26,28 +32,34 @@ const palette = [
   0xFFD81B60, 0xFFF48FB1, 0xFF8E24AA, 0xFF5E35B1, 0xFF6D4C41, 0xFF90A4AE,
 ];
 
-// Path cache lives next to the strokes (not inside them): a Path can't be sent to the save isolate.
+// Path cache lives next to the strokes (not inside them), so strokes stay plain data.
 final _paths = Expando<Path>();
 
 /// Area a stroke covers, including its width.
 Rect strokeBounds(Stroke s) => s.bounds;
 
-/// Outline of a stroke as a filled shape. Finished strokes are cached unless [cache] is false
-/// (the endless sheet keeps its own image tiles instead of one path per stroke).
+/// Outline of a stroke as a filled shape (computed by the Rust core). Finished strokes are cached unless
+/// [cache] is false (the endless sheet keeps its own image tiles instead of one path per stroke).
 Path strokePath(Stroke s, {bool complete = true, bool cache = true}) {
   final hit = complete ? _paths[s] : null;
   if (hit != null) return hit;
-  final pen = penTypes[s.type] ?? penTypes['ballpoint']!;
-  final pts = [for (var i = 0; i + 2 < s.pts.length; i += 3) PointVector(s.pts[i], s.pts[i + 1], s.pts[i + 2])];
-  final outline = getStroke(pts,
-      options: StrokeOptions(
-          size: s.size, thinning: pen.thinning, smoothing: 0.5, streamline: 0.35,
-          simulatePressure: s.sim && pen.thinning > 0, isComplete: complete));
-  final path = Path();
-  if (outline.length > 2) path.addPolygon(outline, true);
+  final o = rust.strokeOutline(kind: s.kind, size: s.size, sim: s.sim, points: s.pts, complete: complete);
+  final p = o.points, starts = o.starts, path = Path();
+  for (var k = 0; k < starts.length; k++) {
+    final from = starts[k], to = k + 1 < starts.length ? starts[k + 1] : p.length ~/ 2;
+    if (to - from < 3) continue;
+    path.moveTo(p[2 * from], p[2 * from + 1]);
+    for (var i = from + 1; i < to; i++) {
+      path.lineTo(p[2 * i], p[2 * i + 1]);
+    }
+    path.close();
+  }
   if (complete && cache) _paths[s] = path;
   return path;
 }
+
+/// Shape tool: hand-drawn points (x, y, pressure) as a clean line, circle, ellipse, rectangle or polygon, or null.
+Float32List? recognizeShape(List<double> pts, double size) => rust.recognizeShape(points: pts, size: size);
 
 Paint _inkPaint(Stroke s) {
   final pen = penTypes[s.type] ?? penTypes['ballpoint']!;
@@ -72,26 +84,6 @@ void paintStrokeLod(Canvas c, Stroke s, double pxPerUnit) {
     ..strokeCap = StrokeCap.round
     ..strokeJoin = StrokeJoin.round
     ..strokeWidth = s.size * 0.8);
-}
-
-double distToSeg(Offset p, Offset a, Offset b) {
-  final d = b - a, len2 = d.dx * d.dx + d.dy * d.dy;
-  final t = len2 == 0 ? 0.0 : (((p - a).dx * d.dx + (p - a).dy * d.dy) / len2).clamp(0.0, 1.0);
-  return (p - (a + d * t)).distance;
-}
-
-/// True if an eraser of radius [r] at [p] touches the stroke.
-bool hitStroke(Stroke s, Offset p, double r) {
-  final tol = r + s.size / 2, q = s.pts;
-  if (q.length < 3 || !strokeBounds(s).inflate(r).contains(p)) return false;
-  var prev = Offset(q[0], q[1]);
-  if (q.length == 3) return (p - prev).distance <= tol;
-  for (var i = 3; i + 2 < q.length; i += 3) {
-    final cur = Offset(q[i], q[i + 1]);
-    if (distToSeg(p, prev, cur) <= tol) return true;
-    prev = cur;
-  }
-  return false;
 }
 
 class PaperPainter extends CustomPainter {

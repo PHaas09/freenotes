@@ -1,16 +1,21 @@
 // ignore_for_file: avoid_print
 // Load test for the endless sheet: 1000 fully written A4 pages on one sheet.
-// Run: flutter test benchmark/endless_bench_test.dart
-// Times are from the debug test runner (JIT); the installed app (AOT) is usually several times faster.
+// Run: cargo build --release --manifest-path rust/Cargo.toml && flutter test benchmark/endless_bench_test.dart
+// Times are from the debug test runner (JIT); the installed app (AOT) is faster.
+import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freenotes/ink.dart';
 import 'package:freenotes/model.dart';
+import 'package:freenotes/scene.dart';
+import 'package:freenotes/src/rust/api/codec.dart';
 import 'package:freenotes/tiles.dart';
 import 'package:material_ui/material_ui.dart';
+
+import '../test/rust_init.dart';
 
 const pages = 1000, linesPerPage = 30, wordsPerLine = 4; // 120 strokes per page
 
@@ -46,35 +51,47 @@ Future<int> settle(TileCache cache, Size size, Offset offset, double scale) asyn
 }
 
 void main() {
+  setUpAll(initRust);
+
   testWidgets('1000 A4 pages on one endless sheet', (tester) async {
     await tester.runAsync(() async {
       final sw = Stopwatch()..start();
       final strokes = handwriting();
       final pts = strokes.fold<int>(0, (n, s) => n + s.pts.length ~/ 3);
-      print('Striche: ${strokes.length}, Punkte: $pts (erzeugt in ${sw.elapsedMilliseconds} ms)');
-
+      print('Striche: ${strokes.length}, Punkte: $pts');
       final nb = Notebook('bench0001', [NotePage(infinite: true, strokes: strokes)]);
+
       sw.reset();
-      final saving = encodeNotebook(nb);
-      print('Speichern, davon blockiert die Oberfläche: ${sw.elapsedMilliseconds} ms');
-      final bytes = await saving;
-      print('Speichern (Hintergrund): ${sw.elapsedMilliseconds} ms, Datei ${(bytes.length / 1048576).toStringAsFixed(1)} MB');
+      final json = await Isolate.run(() => utf8.encode(jsonEncode(nb)));
+      final jsonMs = sw.elapsedMilliseconds;
       sw.reset();
-      final loading = decodeNotebook(bytes);
-      print('Laden, davon blockiert die Oberfläche: ${sw.elapsedMilliseconds} ms');
-      final loaded = (await loading).pages.single.strokes;
-      print('Laden (Hintergrund, inkl. Begrenzungen): ${sw.elapsedMilliseconds} ms');
+      await Isolate.run(() => Notebook.fromJson(jsonDecode(utf8.decode(json))));
+      print('ALT (JSON): speichern $jsonMs ms, laden ${sw.elapsedMilliseconds} ms, Datei ${(json.length / 1048576).toStringAsFixed(1)} MB');
+
+      sw.reset();
+      final batch = strokeBatch(strokes);
+      final batchMs = sw.elapsedMilliseconds;
+      sw.reset();
+      await encodeStrokes(batch: batch);
+      print('  davon: Daten zusammenstellen (Dart) $batchMs ms, packen (Rust) ${sw.elapsedMilliseconds} ms');
+      sw.reset();
+      final bytes = await encodeNotebook(nb);
+      final saveMs = sw.elapsedMilliseconds;
+      sw.reset();
+      final loaded = (await decodeNotebook(bytes)).pages.single.strokes;
+      print('NEU (Rust): speichern $saveMs ms, laden ${sw.elapsedMilliseconds} ms, Datei ${(bytes.length / 1048576).toStringAsFixed(1)} MB');
 
       const view = Size(1280, 800);
-      final cache = TileCache(() {});
+      final scene = PageScene();
+      final cache = TileCache(() {}, scene.render, ready: () => scene.ready);
+      scene.onChange = cache.changed;
       sw.reset();
-      cache.setStrokes(loaded);
-      for (final s in loaded) { strokeBounds(s); }
-      print('Öffnen: Vorbereitung im Vordergrund: ${sw.elapsedMilliseconds} ms');
+      await scene.load(loaded);
+      print('Öffnen: Suchbaum für alle Striche aufbauen: ${sw.elapsedMilliseconds} ms');
 
       // Overview: all 1000 pages on one screen (40 x 25 pages = 26 000 x 22 500 units)
       const overview = 0.045;
-      print('Gesamtansicht zeichnen (einmalig): ${await settle(cache, view, const Offset(20, 20), overview)} ms');
+      print('Gesamtansicht zeichnen (einmalig, Rust auf allen Kernen): ${await settle(cache, view, const Offset(20, 20), overview)} ms');
       var frame = Stopwatch()..start();
       for (var i = 0; i < 60; i++) {
         final rec = ui.PictureRecorder();
@@ -83,7 +100,6 @@ void main() {
       }
       print('Verschieben in der Gesamtansicht: ${(frame.elapsedMicroseconds / 60 / 1000).toStringAsFixed(2)} ms pro Bild');
 
-      // Zoomed into one page, as when writing
       const write = 1.5, at = Offset(-20000, -10000);
       print('Hineinzoomen auf eine Seite (neue Kacheln): ${await settle(cache, view, at, write)} ms');
       frame = Stopwatch()..start();
@@ -94,16 +110,18 @@ void main() {
       }
       print('Verschieben beim Schreiben: ${(frame.elapsedMicroseconds / 60 / 1000).toStringAsFixed(2)} ms pro Bild');
 
-      // Writing one more stroke and erasing
       final extra = Stroke(type: 'ballpoint', color: 0xFF000000, size: 2, pts: Float32List.fromList([13400, 6800, .5, 13500, 6810, .5]));
-      final more = [...loaded, extra];
       sw.reset();
-      cache.setStrokes(more);
-      print('Strich hinzufügen (Liste + Kacheln markieren): ${sw.elapsedMicroseconds / 1000} ms');
+      scene.sync([...loaded, extra]);
+      print('Strich hinzufügen: ${sw.elapsedMicroseconds / 1000} ms');
       sw.reset();
-      final hit = more.where((s) => hitStroke(s, const Offset(13450, 6805), 5)).length;
-      print('Radierer-Treffertest über alle Striche: ${sw.elapsedMicroseconds / 1000} ms ($hit Treffer)');
+      final hit = scene.hit(13450, 6805, 5);
+      print('Radierer-Suche über alle Striche (Rust, Suchbaum): ${sw.elapsedMicroseconds / 1000} ms (${hit.length} Treffer)');
+      sw.reset();
+      final sel = scene.lasso([13000, 6700, 14000, 6700, 14000, 7400, 13000, 7400]);
+      print('Lasso-Auswahl einer Seitenfläche: ${sw.elapsedMicroseconds / 1000} ms (${sel.length} Striche)');
       cache.dispose();
+      scene.dispose();
     });
   }, timeout: const Timeout(Duration(minutes: 10)));
 }

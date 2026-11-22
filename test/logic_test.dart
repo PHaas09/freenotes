@@ -4,9 +4,14 @@ import 'dart:ui';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:freenotes/ink.dart';
 import 'package:freenotes/model.dart';
+import 'package:freenotes/scene.dart';
 import 'package:freenotes/sync.dart';
 
+import 'rust_init.dart';
+
 void main() {
+  setUpAll(initRust);
+
   test('sync decision', () {
     expect(decide(5, 5, 1), SyncAction.none);
     expect(decide(5, null, null), SyncAction.upload); // new here
@@ -17,15 +22,36 @@ void main() {
     expect(decide(7, 8, null), SyncAction.conflict); // never synced, differs on both
   });
 
-  test('eraser hit test', () {
+  test('eraser, precise eraser and lasso find strokes through the Rust core', () async {
     final line = Stroke(type: 'ballpoint', color: 0, size: 4, pts: [0, 0, .5, 100, 0, .5]);
-    expect(hitStroke(line, const Offset(50, 5), 5), isTrue);
-    expect(hitStroke(line, const Offset(50, 30), 5), isFalse);
-    expect(hitStroke(line, const Offset(105, 0), 5), isTrue);
-    expect(hitStroke(line, const Offset(120, 0), 5), isFalse);
     final dot = Stroke(type: 'ballpoint', color: 0, size: 4, pts: [10, 10, .5]);
-    expect(hitStroke(dot, const Offset(12, 12), 2), isTrue);
-    expect(hitStroke(dot, const Offset(30, 30), 2), isFalse);
+    final scene = PageScene();
+    await scene.load([line, dot]);
+    expect(scene.hit(50, 5, 5), [line]);
+    expect(scene.hit(50, 30, 5), isEmpty);
+    expect(scene.hit(105, 0, 5), [line], reason: 'just past the end: radius + half the width');
+    expect(scene.hit(120, 0, 5), isEmpty);
+    expect(scene.hit(12, 12, 2), contains(dot));
+    // lasso around the line only
+    expect(scene.lasso([-5, -5, 110, -5, 110, 5, -5, 5]), [line]);
+    // precise eraser cuts the line in two
+    final cuts = scene.erasePartial(50, 0, 5);
+    expect(cuts.single.$1, line);
+    expect(cuts.single.$2.length, 2);
+    // after removing it from the page list, the scene no longer finds it
+    scene.sync([dot]);
+    expect(scene.hit(50, 0, 5), isEmpty);
+    scene.dispose();
+  });
+
+  test('pen outlines come from the Rust core: the new pens draw, shapes snap', () {
+    for (final type in penKinds) {
+      final s = Stroke(type: type, color: 0xFF000000, size: 4, pts: [for (var i = 0; i < 20; i++) ...[i * 5.0, (i % 3) * 2.0, 0.5]]);
+      expect(strokePath(s).getBounds().width, greaterThan(80), reason: '\$type draws');
+    }
+    final wobbly = [for (var i = 0; i < 50; i++) ...[i * 4.0, 100 + (i % 2) * 1.5, 0.5]];
+    final line = recognizeShape(wobbly, 2)!;
+    expect({for (var i = 1; i < line.length; i += 3) line[i]}.length, 1, reason: 'snapped to one straight horizontal line');
   });
 
   test('notebook survives a save/load round trip', () {
@@ -56,13 +82,42 @@ void main() {
     expect(back.strokes.single.pts[1], closeTo(50.568, 0.002));
   });
 
-  test('saving and loading in a background isolate gives the same notebook', () async {
-    final nb = Notebook('abcd1234', [NotePage(infinite: true, strokes: [Stroke(type: 'pencil', color: 1, size: 3, pts: [1, 2, .5, 3, 4, .5])])]);
-    final back = await decodeNotebook(await encodeNotebook(nb));
-    expect(back.pages.single.strokes.single.pts, [1, 2, .5, 3, 4, .5]);
-    final (assets, bytes) = await checkNotebookFile(await encodeNotebook(nb), 'zzzz9999');
-    expect(assets, isEmpty);
+  test('new compact file format: round trip, conflict copy with a new id', () async {
+    final nb = Notebook('abcd1234', [
+      NotePage(infinite: true, strokes: [Stroke(type: 'calligraphy', color: 0xFF112233, size: 3, pts: [1, 2, .5, 3, 4, 1])]),
+      NotePage(texts: const [TextBox(id: 't1xx', x: 1, y: 2, text: 'Hallo')],
+          images: const [ImageBox(id: 'i1xx', asset: 'abcd1234.png', rect: Rect.fromLTWH(1, 2, 3, 4))]),
+    ]);
+    final bytes = await encodeNotebook(nb);
+    expect(String.fromCharCodes(bytes.take(4)), 'FNB2');
+    final back = await decodeNotebook(bytes);
+    final s = back.pages[0].strokes.single;
+    expect((s.type, s.color, s.size), ('calligraphy', 0xFF112233, 3.0));
+    expect(s.pts, [closeTo(1, 1e-3), closeTo(2, 1e-3), closeTo(.5, 0.01), closeTo(3, 1e-3), closeTo(4, 1e-3), closeTo(1, 0.01)]);
+    expect(back.pages[0].infinite, isTrue);
+    expect(back.pages[1].texts.single.text, 'Hallo');
+    final (assets, copy) = await checkNotebookFile(bytes, 'zzzz9999');
+    expect(assets, {'abcd1234.png'});
+    expect((await decodeNotebook(copy)).id, 'zzzz9999');
+    await expectLater(decodeNotebook([..._magic, 255, 255, 255, 255]), throwsFormatException);
+  });
+
+  test('notebooks saved by FreeNotes 1.x (JSON) still open', () async {
+    final old = utf8.encode(jsonEncode(Notebook('abcd1234', [NotePage(strokes: [Stroke(type: 'fountain', color: 1, size: 2, pts: [1, 2, .5])])])));
+    final back = await decodeNotebook(old);
+    expect(back.pages.single.strokes.single.type, 'fountain');
+    final (_, bytes) = await checkNotebookFile(old, 'zzzz9999');
     expect((await decodeNotebook(bytes)).id, 'zzzz9999');
+  });
+
+  test('NAS certificate: remembered on first contact, then only exactly that one is accepted', () {
+    final cfg = NasConfig()..trustNew = true;
+    expect(trustCertificate(cfg, '10.1.2.3', 'evil.example', [1, 2, 3]), isFalse, reason: 'other hosts never');
+    expect(trustCertificate(cfg, '10.1.2.3', '10.1.2.3', [1, 2, 3]), isTrue, reason: 'first contact in the assistant');
+    cfg.trustNew = false;
+    expect(trustCertificate(cfg, '10.1.2.3', '10.1.2.3', [1, 2, 3]), isTrue, reason: 'same certificate again');
+    expect(trustCertificate(cfg, '10.1.2.3', '10.1.2.3', [9, 9, 9]), isFalse, reason: 'a different certificate is refused');
+    expect(trustCertificate(NasConfig(), '10.1.2.3', '10.1.2.3', [1]), isFalse, reason: 'nothing remembered, not allowed');
   });
 
   test('ids and asset names from the NAS are checked', () {
@@ -83,3 +138,5 @@ void main() {
     expect(parseFolders(xml.replaceAll('D:', 'd:'), '/'), ['Meine Fotos', 'personal_folder']);
   });
 }
+
+const _magic = [0x46, 0x4E, 0x42, 0x32];

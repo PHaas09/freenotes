@@ -5,12 +5,16 @@ import 'package:pdfrx/pdfrx.dart';
 
 import 'dialogs.dart';
 import 'library_screen.dart';
+import 'prefs.dart';
+import 'src/rust/frb_generated.dart';
 import 'store.dart';
 import 'sync.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await RustLib.init(); // the Rust core: stroke shapes, file format, tiles, eraser/lasso search, scans
   await pdfrxFlutterInitialize();
+  await Prefs.instance.load();
   final Store store;
   try {
     store = await Store.open();
