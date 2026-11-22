@@ -138,7 +138,7 @@ class SyncService {
   final status = ValueNotifier<String>('');
   final busy = ValueNotifier<bool>(false);
   final ok = ValueNotifier<bool?>(null); // null = not set up / not run yet
-  String? openId; // notebook open in the editor: never overwritten from the NAS while open
+  final openIds = <String>{}; // notebooks open in an editor: never overwritten from the NAS while open
   static const _secure = FlutterSecureStorage();
 
   Future<File> _settingsFile() async => File(p.join((await getApplicationSupportDirectory()).path, 'nas.json'));
@@ -228,7 +228,7 @@ class SyncService {
       var a = decide(l?.updatedAt, r?.updatedAt, s.syncBase[id]);
       if (a == SyncAction.conflict && r!.deleted) a = SyncAction.upload; // deleted there, edited here: keep it
       if (a == SyncAction.conflict && l!.deleted) a = SyncAction.download; // deleted here, edited there: restore
-      if (id == openId && (a == SyncAction.download || a == SyncAction.conflict)) {
+      if (openIds.contains(id) && (a == SyncAction.download || a == SyncAction.conflict)) {
         out[id] = r!; // decide again once the notebook is closed
         continue;
       }

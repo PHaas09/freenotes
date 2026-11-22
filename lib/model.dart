@@ -153,7 +153,11 @@ Uint8List _u32(int v) => Uint8List(4)..buffer.asByteData().setUint32(0, v, Endia
 
 Future<List<int>> encodeNotebook(Notebook nb) async {
   final blobs = await Future.wait([for (final p in nb.pages) encodeStrokes(batch: strokeBatch(p.strokes))]);
-  final head = utf8.encode(jsonEncode({'id': nb.id, 'pages': [for (final p in nb.pages) p.toJson(withStrokes: false)]}));
+  final head = utf8.encode(jsonEncode({
+    'id': nb.id,
+    'pages': [for (final p in nb.pages) p.toJson(withStrokes: false)],
+    if (nb.recordings.isNotEmpty) 'recordings': nb.recordings,
+  }));
   final out = BytesBuilder(copy: false)
     ..add(_magic)
     ..add(_u32(head.length))
@@ -175,7 +179,7 @@ Future<Notebook> decodeNotebook(List<int> bytes) async {
   final strokes = await Future.wait([for (final b in blobs) decodeStrokes(bytes: b)]);
   return Notebook(j['id'] as String, [
     for (var i = 0; i < pages.length; i++) NotePage.fromJson(pages[i] as Map<String, dynamic>, strokes: strokesFromBatch(strokes[i]))
-  ]);
+  ], recordings: _recordings(j));
 }
 
 /// Checks a notebook file (e.g. from the NAS) and returns its attachments plus the bytes to store under [id].
@@ -183,7 +187,7 @@ Future<(Set<String>, List<int>)> checkNotebookFile(List<int> bytes, String id) a
   if (!_isV2(bytes)) {
     return Isolate.run(() {
       final nb = Notebook.fromJson(jsonDecode(utf8.decode(bytes)));
-      return (nb.assets(), nb.id == id ? bytes : utf8.encode(jsonEncode(Notebook(id, nb.pages))));
+      return (nb.assets(), nb.id == id ? bytes : utf8.encode(jsonEncode(Notebook(id, nb.pages, recordings: nb.recordings))));
     });
   }
   final (head, blobs) = _splitV2(bytes);
@@ -192,7 +196,8 @@ Future<(Set<String>, List<int>)> checkNotebookFile(List<int> bytes, String id) a
     for (final p in (j['pages'] as List).cast<Map<String, dynamic>>()) ...[
       if (p['pdf'] is String) p['pdf'] as String,
       for (final i in (p['images'] as List? ?? const [])) (i as Map<String, dynamic>)['a'] as String,
-    ]
+    ],
+    for (final r in _recordings(j)) r.asset,
   };
   if (j['id'] == id) return (assets, bytes);
   final newHead = utf8.encode(jsonEncode({...j, 'id': id}));
@@ -270,17 +275,33 @@ class NotePage {
 }
 
 class Notebook {
-  Notebook(this.id, this.pages);
+  Notebook(this.id, this.pages, {List<Recording>? recordings}) : recordings = recordings ?? [];
   final String id;
   final List<NotePage> pages;
+  final List<Recording> recordings;
 
   Set<String> assets() => {
-        for (final p in pages) ...[if (p.pdf != null) p.pdf!, for (final i in p.images) i.asset]
+        for (final p in pages) ...[if (p.pdf != null) p.pdf!, for (final i in p.images) i.asset],
+        for (final r in recordings) r.asset,
       };
   String searchText() => [for (final p in pages) for (final t in p.texts) t.text].join('\n').toLowerCase();
-  Map<String, dynamic> toJson() => {'id': id, 'pages': pages};
-  factory Notebook.fromJson(Map<String, dynamic> j) =>
-      Notebook(j['id'] as String, [for (final p in j['pages'] as List) NotePage.fromJson(p)]);
+  Map<String, dynamic> toJson() => {'id': id, 'pages': pages, if (recordings.isNotEmpty) 'recordings': recordings};
+  factory Notebook.fromJson(Map<String, dynamic> j) => Notebook(j['id'] as String, [for (final p in j['pages'] as List) NotePage.fromJson(p)],
+      recordings: _recordings(j));
+}
+
+List<Recording> _recordings(Map<String, dynamic> j) =>
+    [for (final r in (j['recordings'] as List? ?? const [])) Recording.fromJson(r as Map<String, dynamic>)];
+
+/// A screen recording kept with the notebook: an MP4 file among the notebook's attachments.
+class Recording {
+  const Recording({required this.asset, required this.created, required this.ms, required this.audio});
+  final String asset;
+  final int created, ms; // when it was made, how long it is
+  final bool audio; // with sound from the microphone
+  Map<String, dynamic> toJson() => {'a': asset, 'c': created, 'ms': ms, 'au': audio};
+  factory Recording.fromJson(Map<String, dynamic> j) =>
+      Recording(asset: j['a'] as String, created: j['c'] as int, ms: j['ms'] as int, audio: j['au'] as bool? ?? false);
 }
 
 class NotebookMeta {

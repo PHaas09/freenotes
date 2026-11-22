@@ -6,6 +6,7 @@ import 'package:pdfrx/pdfrx.dart';
 import 'dialogs.dart';
 import 'library_screen.dart';
 import 'prefs.dart';
+import 'recorder.dart';
 import 'src/rust/frb_generated.dart';
 import 'store.dart';
 import 'sync.dart';
@@ -96,6 +97,8 @@ class _FreeNotesAppState extends State<FreeNotesApp> {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(colorSchemeSeed: seed),
       darkTheme: ThemeData(colorSchemeSeed: seed, brightness: Brightness.dark),
+      // the whole app, dialogs included, is what a screen recording on Windows shows
+      builder: (context, child) => RepaintBoundary(key: ScreenRecorder.area, child: child),
       home: LibraryScreen(store: widget.store, sync: widget.sync),
     );
   }

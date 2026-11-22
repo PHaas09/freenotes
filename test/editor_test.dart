@@ -7,6 +7,7 @@ import 'package:freenotes/editor_screen.dart';
 import 'package:freenotes/model.dart';
 import 'package:freenotes/store.dart';
 import 'package:freenotes/sync.dart';
+import 'package:freenotes/workspace.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -95,6 +96,17 @@ void main() {
     await tester.pump();
     expect(s.zoom, closeTo(0.25 * 2.718, 0.02));
 
+    // holding the right mouse button, the wheel zooms too (without it, the wheel scrolls)
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+    await mouse.down(canvasCenter(tester));
+    tester.binding.handlePointerEvent(PointerScrollEvent(position: canvasCenter(tester), scrollDelta: const Offset(0, 400)));
+    await mouse.up();
+    await tester.pump();
+    expect(s.zoom, closeTo(0.25, 0.01));
+    tester.binding.handlePointerEvent(PointerScrollEvent(position: canvasCenter(tester), scrollDelta: const Offset(0, 400)));
+    await tester.pump();
+    expect(s.zoom, closeTo(0.25, 0.01), reason: 'button released: the wheel scrolls again');
+
     // endless sheet zooms far beyond a page in both directions
     for (var i = 0; i < 8; i++) {
       await pinch(tester, 400, 50);
@@ -140,6 +152,54 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(s.scale, scale, reason: 'the view is not reset when the window changes size');
+    await closeEditor(tester);
+  });
+
+  testWidgets('a second notebook opens beside the first and closes again', (tester) async {
+    late Store store;
+    late NotebookMeta pdf;
+    await tester.runAsync(() async {
+      final tmp = await Directory.systemTemp.createTemp('freenotes_split');
+      addTearDown(() => tmp.delete(recursive: true).then((_) {}, onError: (_) {}));
+      PathProviderPlatform.instance = _FakePaths(tmp.path);
+      store = await Store.open();
+      pdf = await store.createNotebook('Skript', pages: [NotePage()]);
+      await store.createNotebook('Notizen', pages: [NotePage()]);
+    });
+    await tester.binding.setSurfaceSize(const Size(1600, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final sync = SyncService(store);
+    await tester.pumpWidget(MaterialApp(home: Workspace(store: store, sync: sync, first: pdf)));
+    Future<void> settle() async {
+      for (var i = 0; i < 20; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    await settle();
+    final dynamic first = tester.state(find.byType(EditorScreen));
+    expect(first.nb, isNotNull);
+    Future<void> tapAndWait(Finder f) async {
+      await tester.tap(f);
+      await tester.pump(); // starts the menu / dialog animation
+      await tester.pump(const Duration(milliseconds: 500));
+    }
+
+    await tapAndWait(find.byTooltip('Seite'));
+    await tapAndWait(find.text('Zweites Notizbuch daneben öffnen'));
+    await tester.tap(find.text('Notizen'));
+    await settle();
+
+    expect(find.byType(EditorScreen), findsNWidgets(2));
+    expect(tester.state(find.byType(EditorScreen).first), same(first), reason: 'the first side keeps its page, zoom and undo');
+    expect(tester.getSize(find.byType(EditorScreen).last).width, closeTo(800, 1), reason: 'side by side on a wide window');
+    expect(sync.openIds, hasLength(2), reason: 'neither is overwritten from the NAS while open');
+
+    await tester.tap(find.byTooltip('Diese Seite schließen'));
+    await settle();
+    expect(find.byType(EditorScreen), findsOneWidget);
+    expect(sync.openIds, {pdf.id});
     await closeEditor(tester);
   });
 }

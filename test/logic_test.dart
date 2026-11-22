@@ -102,6 +102,20 @@ void main() {
     await expectLater(decodeNotebook([..._magic, 255, 255, 255, 255]), throwsFormatException);
   });
 
+  test('screen recordings are kept with the notebook and synced as attachments', () async {
+    const rec = Recording(asset: 'abcd5678.mp4', created: 1700000000000, ms: 61500, audio: true);
+    final nb = Notebook('abcd1234', [NotePage()], recordings: [rec]);
+    expect(nb.assets(), {'abcd5678.mp4'});
+    final back = await decodeNotebook(await encodeNotebook(nb));
+    expect(back.recordings.single.toJson(), rec.toJson());
+    final (assets, copy) = await checkNotebookFile(await encodeNotebook(nb), 'zzzz9999');
+    expect(assets, {'abcd5678.mp4'}, reason: 'the NAS sync uploads and downloads the video');
+    expect((await decodeNotebook(copy)).recordings, hasLength(1), reason: 'a conflict copy keeps them');
+    final old = Notebook.fromJson(jsonDecode(jsonEncode(nb)));
+    expect(old.recordings.single.audio, isTrue);
+    expect(validAsset.hasMatch(rec.asset), isTrue);
+  });
+
   test('notebooks saved by FreeNotes 1.x (JSON) still open', () async {
     final old = utf8.encode(jsonEncode(Notebook('abcd1234', [NotePage(strokes: [Stroke(type: 'fountain', color: 1, size: 2, pts: [1, 2, .5])])])));
     final back = await decodeNotebook(old);

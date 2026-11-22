@@ -1,12 +1,15 @@
-//! Sharp text from scanned PDF pages at any zoom.
+//! Sharp, clear text from scanned PDF pages at any zoom.
 //!
 //! A scan has no text, only pixels, so zooming in normally gives blurry letters. Like distance-field
 //! font rendering, the smooth (bicubic) image is used as a map of "how inky" every point is: near a
 //! letter edge each pixel is pushed to the local ink or paper colour with a one-screen-pixel soft edge,
-//! so edges stay sharp however far you zoom. Flat areas and soft photos keep their plain colours.
+//! so edges stay sharp however far you zoom. Soft photos keep their plain colours.
 //! Ink and paper colours come from the neighbourhood: its pixels are split into a dark and a light group
 //! (two-means on brightness, like Otsu's method); ink = the darker half of the dark group, paper = the
 //! light group of a wider area, so soft letter edges don't make text grey or leave light or dark halos.
+//! For clearer reading the ink is drawn darker than scanned, thin strokes the scanner blurred to light
+//! grey (the bar of a "t") are brought out with an unsharp mask, and faint grey specks on the paper
+//! (JPEG blocks, the back page shining through) become clean paper.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -27,6 +30,11 @@ struct Scan {
 
 static SCANS: LazyLock<RwLock<HashMap<u32, Arc<Scan>>>> = LazyLock::new(Default::default);
 static NEXT: AtomicU32 = AtomicU32::new(1);
+
+/// How much darker than the scan the ink is drawn (1 = as scanned).
+const INK_BOOST: f32 = 1.3;
+/// Strength of the unsharp mask that keeps thin strokes (bar of a "t", hairlines) from fading.
+const THIN_BOOST: f32 = 1.5;
 
 fn lum(c: [f32; 3]) -> f32 {
     0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
@@ -110,18 +118,18 @@ fn ink_and_paper(rgb: &[[f32; 3]], lum: &[f32], w: usize, h: usize) -> (Vec<[f32
         .unzip()
 }
 
-fn blur(img: &[[f32; 3]], w: usize, h: usize, sigma: f32) -> Vec<[f32; 3]> {
+fn blur<const C: usize>(img: &[[f32; C]], w: usize, h: usize, sigma: f32) -> Vec<[f32; C]> {
     let rad = (sigma * 3.0).ceil() as isize;
     let k: Vec<f32> = (-rad..=rad).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
     let sum: f32 = k.iter().sum();
     let k: Vec<f32> = k.iter().map(|v| v / sum).collect();
-    let pass = |src: &[[f32; 3]], horizontal: bool| -> Vec<[f32; 3]> {
+    let pass = |src: &[[f32; C]], horizontal: bool| -> Vec<[f32; C]> {
         (0..h)
             .into_par_iter()
             .flat_map_iter(|y| {
                 let k = &k;
                 (0..w).map(move |x| {
-                    let mut acc = [0.0f32; 3];
+                    let mut acc = [0.0f32; C];
                     for (j, kv) in k.iter().enumerate() {
                         let d = j as isize - rad;
                         let i = if horizontal {
@@ -129,7 +137,7 @@ fn blur(img: &[[f32; 3]], w: usize, h: usize, sigma: f32) -> Vec<[f32; 3]> {
                         } else {
                             (y as isize + d).clamp(0, h as isize - 1) as usize * w + x
                         };
-                        for c in 0..3 {
+                        for c in 0..C {
                             acc[c] += src[i][c] * kv;
                         }
                     }
@@ -149,7 +157,17 @@ pub fn scan_load(pixels: Vec<u8>, width: u32, height: u32, res: f64, bgra: bool)
     let rgb: Vec<[f32; 3]> = pixels.chunks_exact(4).take(w * h).map(|p| [p[r] as f32, p[1] as f32, p[b] as f32]).collect();
     let lum_v: Vec<f32> = rgb.par_iter().map(|c| lum(*c)).collect();
     let (ink, paper) = ink_and_paper(&rgb, &lum_v, w, h);
-    let (ink, paper) = (blur(&ink, w, h, 1.0), blur(&paper, w, h, 1.0));
+    let (mut ink, paper) = (blur(&ink, w, h, 1.0), blur(&paper, w, h, 1.0));
+    // clearer text: ink a bit further away from the paper colour (grey print becomes black, colours deeper)
+    ink.par_iter_mut().zip(&paper).for_each(|(i, p)| {
+        for c in 0..3 {
+            i[c] = (p[c] + (i[c] - p[c]) * INK_BOOST).clamp(0.0, 255.0);
+        }
+    });
+    // Brightness with thin strokes brought out (unsharp mask): the scanner blurs a 1 px line like the bar
+    // of a "t" to a light grey that would otherwise count as paper. Only decides ink or paper.
+    let soft = blur(&lum_v.iter().map(|&l| [l]).collect::<Vec<_>>(), w, h, 1.2);
+    let lum_v: Vec<f32> = lum_v.iter().zip(&soft).map(|(&l, s)| l + (l - s[0]) * THIN_BOOST).collect();
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     SCANS.write().unwrap().insert(id, Arc::new(Scan { w, h, res, rgb, lum: lum_v, ink, paper }));
     id
@@ -214,16 +232,25 @@ pub fn scan_render(scan: u32, x0: f64, y0: f64, unit: f64, px: u32) -> Vec<u8> {
             };
             let (ink, paper) = (bil(&s.ink), bil(&s.paper));
             let (li, lp) = (lum(ink), lum(paper));
-            let contrast = (lp - li) / 255.0;
+            let li0 = lp - (lp - li) / INK_BOOST; // ink brightness as scanned: decides ink or paper
+            let contrast = (lp - li0) / 255.0;
+            // 1: text on paper, 0: a soft picture or plain paper
+            let k = ((contrast - 0.12) / 0.06).clamp(0.0, 1.0);
             let mut col_rgb = c;
-            if contrast >= 0.12 {
-                let t = ((sm - li) / (lp - li)).clamp(0.0, 1.0);
+            if k > 0.0 {
+                let t = ((sm - li0) / (lp - li0)).clamp(0.0, 1.0);
                 let e = ((t - 0.5) / (2.0 * w_edge) + 0.5).clamp(0.0, 1.0);
                 let st = e * e * (3.0 - 2.0 * e);
-                let k = ((contrast - 0.12) / 0.06).min(1.0);
                 for ch in 0..3 {
                     col_rgb[ch] = (ink[ch] + (paper[ch] - ink[ch]) * st) * k + c[ch] * (1.0 - k);
                 }
+            }
+            // A light, grey neighbourhood without real ink is paper with JPEG blocks or the back page
+            // shining through: drawn as clean paper. Dark or coloured areas (pictures) keep their colours.
+            let sat = (ink[0].max(ink[1]).max(ink[2]) - ink[0].min(ink[1]).min(ink[2])) / 255.0;
+            let blank = (1.0 - k) * ((li0 / 255.0 - 0.55) / 0.15).clamp(0.0, 1.0) * (1.0 - ((sat - 0.08) / 0.08).clamp(0.0, 1.0));
+            for ch in 0..3 {
+                col_rgb[ch] += (paper[ch] - col_rgb[ch]) * blank;
             }
             let o = col * 4;
             line[o] = col_rgb[0].clamp(0.0, 255.0) as u8;
@@ -274,6 +301,40 @@ mod tests {
         assert!(grey * 2 <= grey_plain, "edge {grey} px wide, without sharpening {grey_plain} px");
         assert!(row[20 * 16] < 40, "middle of the bar stays dark");
         assert!(row[2 * 16] > 215, "paper stays white");
+        scan_drop(id);
+    }
+
+    /// Paper (250) with a 3 px dark stem (40), a 1 px light-grey bar (150) like the bar of a scanned "t",
+    /// and a faint grey JPEG block (238) far from any ink.
+    fn t_and_noise(w: usize, h: usize) -> Vec<u8> {
+        let mut v = vec![];
+        for y in 0..h {
+            for x in 0..w {
+                let g = if (6..9).contains(&x) {
+                    40
+                } else if y == 10 && (9..18).contains(&x) {
+                    150
+                } else if (30..38).contains(&x) && (30..38).contains(&y) {
+                    238
+                } else {
+                    250
+                };
+                v.extend_from_slice(&[g, g, g, 255]);
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn thin_light_strokes_stay_and_scan_noise_becomes_paper() {
+        let (w, h) = (48, 48);
+        let id = scan_load(t_and_noise(w, h), w as u32, h as u32, 1.0, false);
+        let px = scan_render(id, 0.0, 0.0, 8.0, 384); // 8x zoom
+        let at = |sx: f32, sy: f32| px[(((sy + 0.5) * 8.0) as usize * 384 + ((sx + 0.5) * 8.0) as usize) * 4];
+        assert!(at(13.0, 10.0) < 100, "the thin bar is drawn as ink: {}", at(13.0, 10.0));
+        assert!(at(7.0, 20.0) < 30, "the stem is drawn darker than scanned: {}", at(7.0, 20.0));
+        assert!(at(33.5, 33.5) > 245, "the faint grey block is cleaned up: {}", at(33.5, 33.5));
+        assert!(at(13.0, 30.0) > 245, "paper stays white: {}", at(13.0, 30.0));
         scan_drop(id);
     }
 }

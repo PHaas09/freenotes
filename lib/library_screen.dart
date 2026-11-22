@@ -4,11 +4,11 @@ import 'package:path/path.dart' as p;
 import 'package:pdfrx/pdfrx.dart';
 
 import 'dialogs.dart';
-import 'editor_screen.dart';
 import 'model.dart';
 import 'settings_screen.dart';
 import 'store.dart';
 import 'sync.dart';
+import 'workspace.dart';
 
 const covers = [0xFF4F46E5, 0xFF0B8BD9, 0xFF00897B, 0xFF178A3E, 0xFFFF9800, 0xFFD42A2A, 0xFFD81B60, 0xFF6D4C41, 0xFF37474F];
 
@@ -26,7 +26,7 @@ class _LibraryState extends State<LibraryScreen> {
   Store get store => widget.store;
 
   void _open(NotebookMeta m) => Navigator.of(context)
-      .push(MaterialPageRoute(builder: (_) => EditorScreen(store: store, sync: widget.sync, meta: m)));
+      .push(MaterialPageRoute(builder: (_) => Workspace(store: store, sync: widget.sync, first: m)));
 
   Future<void> _newNotebook() async {
     final name = TextEditingController(text: 'Notizbuch ${store.notebooks.length + 1}');

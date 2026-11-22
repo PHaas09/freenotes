@@ -18,11 +18,12 @@ class PenPreset {
   int get hashCode => Object.hash(type, color, size);
 }
 
-/// Settings of this device only (not synced to the NAS): pen favourites.
+/// Settings of this device only (not synced to the NAS): pen favourites, scan sharpening.
 class Prefs {
   Prefs._();
   static final instance = Prefs._();
   final favorites = <PenPreset>[];
+  bool sharpenScans = true; // clearer text in scanned PDFs when zooming in
   File? _file;
 
   Future<void> load() async {
@@ -33,6 +34,7 @@ class Prefs {
         favorites
           ..clear()
           ..addAll([for (final f in j['favorites'] as List? ?? const []) PenPreset.fromJson(f as Map<String, dynamic>)]);
+        sharpenScans = j['sharpenScans'] as bool? ?? true;
       }
     } catch (_) {
       // unreadable settings: start with none, the notes themselves are not affected
@@ -43,6 +45,6 @@ class Prefs {
     final f = _file;
     if (f == null) return;
     await f.parent.create(recursive: true);
-    await f.writeAsString(jsonEncode({'favorites': favorites}));
+    await f.writeAsString(jsonEncode({'favorites': favorites, 'sharpenScans': sharpenScans}));
   }
 }

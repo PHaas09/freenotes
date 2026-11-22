@@ -18,6 +18,7 @@ import 'page_overview.dart';
 import 'pdf_detail.dart';
 import 'pdf_export.dart';
 import 'prefs.dart';
+import 'recorder.dart';
 import 'scene.dart';
 import 'store.dart';
 import 'sync.dart';
@@ -75,10 +76,16 @@ class _Clip {
 _Clip? _clipboard;
 
 class EditorScreen extends StatefulWidget {
-  const EditorScreen({super.key, required this.store, required this.sync, required this.meta});
+  const EditorScreen({super.key, required this.store, required this.sync, required this.meta, this.onSplit, this.onClose});
   final Store store;
   final SyncService sync;
   final NotebookMeta meta;
+
+  /// Set when a second notebook can be opened beside this one (menu "Daneben öffnen").
+  final VoidCallback? onSplit;
+
+  /// Set for the notebook shown beside another one: closes just this side.
+  final VoidCallback? onClose;
   @override
   State<EditorScreen> createState() => _EditorState();
 }
@@ -129,6 +136,7 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
 
   // Input
   final touches = <int, Offset>{}; // fingers / right mouse button: pan and zoom
+  int? rightMouse; // pointer of a held right mouse button: the wheel zooms meanwhile
   int? drawPointer;
   bool stylusSeen = false; // after the first stylus touch, fingers only pan and zoom (palm rejection)
   Stroke? live;
@@ -151,11 +159,13 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
   final pdfImages = <String, ui.Image>{};
   final _pdfLoading = <String>{};
 
+  final _focus = FocusNode(debugLabel: 'editor'); // keyboard shortcuts go to the side last touched
+
   @override
   void initState() {
     super.initState();
     _fling = createTicker(_onFlingTick);
-    widget.sync.openId = widget.meta.id;
+    widget.sync.openIds.add(widget.meta.id);
     widget.store.loadNotebook(widget.meta.id).then((n) {
       if (!mounted) return;
       setState(() => nb = n);
@@ -167,7 +177,9 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
 
   @override
   void dispose() {
-    widget.sync.openId = null;
+    final rec = ScreenRecorder.instance;
+    if (rec.owner == widget.meta.id) rec.stop().ignore(); // the file is finished and kept with the notebook
+    widget.sync.openIds.remove(widget.meta.id);
     widget.store.flush().then((_) => widget.sync.run());
     for (final d in pdfDocs.values) {
       d.dispose();
@@ -179,6 +191,7 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
     scene?.dispose();
     pdfDetail?.dispose();
     _fling.dispose();
+    _focus.dispose();
     _zoomLabelTimer?.cancel();
     _laserTimer?.cancel();
     super.dispose();
@@ -290,11 +303,13 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
 
   void _onDown(PointerDownEvent e) {
     if (nb == null) return;
+    _focus.requestFocus();
     _fling.stop();
     if (touches.isEmpty) _vt = null;
     if (_isStylus(e)) stylusSeen = true;
     final touch = e.kind == PointerDeviceKind.touch, mouse = e.kind == PointerDeviceKind.mouse;
     if (mouse && e.buttons != kPrimaryMouseButton) {
+      if (e.buttons & kSecondaryMouseButton != 0) rightMouse = e.pointer;
       touches[e.pointer] = e.localPosition; // right / middle drag pans
       return;
     }
@@ -342,6 +357,7 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
 
   void _onUp(PointerEvent e, {bool cancel = false}) {
     final wasGesture = touches.remove(e.pointer) != null && e.pointer != drawPointer;
+    if (e.pointer == rightMouse) rightMouse = null;
     if (e.pointer == drawPointer) _end(cancel: cancel);
     if (wasGesture && touches.isEmpty && !cancel) _startFling();
   }
@@ -351,7 +367,7 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
   void _onSignal(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
     final kb = HardwareKeyboard.instance;
-    if (kb.isControlPressed) {
+    if (kb.isControlPressed || rightMouse != null) {
       _zoomAround(e.localPosition, e.localPosition, math.exp(-e.scrollDelta.dy / 400));
     } else {
       offset -= kb.isShiftPressed ? Offset(e.scrollDelta.dy, 0) : e.scrollDelta;
@@ -812,7 +828,7 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
       final doc = await _openPdf(pg.pdf!);
       if (!mounted || !identical(pg, page)) return;
       if (pdfDetail == null) {
-        final d = pdfDetail = PdfDetail(doc.pages[pg.pdfPage!], tick.ping);
+        final d = pdfDetail = PdfDetail(doc.pages[pg.pdfPage!], tick.ping, sharpenScans: Prefs.instance.sharpenScans);
         d.init();
       }
       if (pdfImages.containsKey(key) || !_pdfLoading.add(key)) return;
@@ -841,6 +857,105 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
     } catch (_) {
       return null;
     }
+  }
+
+  // ---------- screen recording ----------
+  Future<void> _startRecording() async {
+    final audio = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => SimpleDialog(title: const Text('Bildschirm aufnehmen'), children: [
+              SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const ListTile(leading: Icon(Icons.mic), title: Text('Mit Ton'), subtitle: Text('Deine Stimme über das Mikrofon'))),
+              SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const ListTile(leading: Icon(Icons.mic_off), title: Text('Ohne Ton'))),
+            ]));
+    if (audio == null || !mounted) return;
+    final notebook = nb!, store = widget.store, name = '${newId()}.mp4', created = nowMs();
+    try {
+      final path = store.assetPath(name);
+      await Directory(File(path).parent.path).create(recursive: true);
+      await ScreenRecorder.instance.start(path, audio: audio, owner: widget.meta.id, onSaved: (ms) {
+        notebook.recordings.add(Recording(asset: name, created: created, ms: ms, audio: audio));
+        store.changed(notebook);
+      });
+    } catch (e) {
+      if (mounted) snack(context, 'Aufnahme nicht möglich: ${e is PlatformException ? e.message : e}');
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    try {
+      final ms = await ScreenRecorder.instance.stop();
+      if (mounted) snack(context, 'Aufnahme gespeichert (${formatDuration(ms)}). Zu finden im Menü unter „Aufnahmen“.');
+    } catch (e) {
+      if (mounted) snack(context, 'Aufnahme konnte nicht gespeichert werden: ${e is PlatformException ? e.message : e}');
+    }
+  }
+
+  String _recTitle(Recording r) {
+    final d = DateTime.fromMillisecondsSinceEpoch(r.created);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return 'Aufnahme vom ${two(d.day)}.${two(d.month)}.${d.year}, ${two(d.hour)}:${two(d.minute)}';
+  }
+
+  Future<void> _playRecording(Recording r) async {
+    final f = File(widget.store.assetPath(r.asset));
+    if (!await f.exists()) {
+      if (mounted) snack(context, 'Die Aufnahme ist auf diesem Gerät noch nicht da (wird mit der NAS abgeglichen).');
+      return;
+    }
+    if (Platform.isLinux) {
+      await Process.run('xdg-open', [f.path]); // no in-app video player for Linux: the system's player opens
+      return;
+    }
+    if (mounted) await Navigator.of(context).push(MaterialPageRoute(builder: (_) => RecordingPlayer(file: f, title: _recTitle(r))));
+  }
+
+  Future<void> _saveRecordingAs(Recording r) async {
+    final src = File(widget.store.assetPath(r.asset));
+    try {
+      final name = '${_recTitle(r).replaceAll(':', '-').replaceAll(',', '')}.mp4';
+      final where = await FilePicker.saveFile(
+          fileName: name, bytes: await src.readAsBytes(), mimeType: 'video/mp4', dialogTitle: 'Aufnahme speichern unter');
+      if (where != null && mounted) snack(context, 'Aufnahme gespeichert');
+    } catch (e) {
+      if (mounted) snack(context, 'Speichern fehlgeschlagen: $e');
+    }
+  }
+
+  Future<void> _openRecordings() async {
+    await showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        builder: (ctx) => StatefulBuilder(
+            builder: (ctx, refresh) => ListView(shrinkWrap: true, children: [
+                  ListTile(title: Text('Aufnahmen (${nb!.recordings.length})', style: Theme.of(ctx).textTheme.titleMedium)),
+                  if (nb!.recordings.isEmpty) const ListTile(title: Text('Noch keine Aufnahmen.')),
+                  for (final r in nb!.recordings.reversed)
+                    ListTile(
+                      leading: Icon(r.audio ? Icons.mic : Icons.videocam_outlined),
+                      title: Text(_recTitle(r)),
+                      subtitle: Text('${formatDuration(r.ms)}${r.audio ? ', mit Ton' : ', ohne Ton'}'),
+                      onTap: () => _playRecording(r),
+                      trailing: PopupMenuButton<String>(
+                        tooltip: 'Mehr',
+                        onSelected: (v) async {
+                          if (v == 'save') return _saveRecordingAs(r);
+                          if (!await confirm(ctx, 'Aufnahme löschen?', '${_recTitle(r)} wird gelöscht.')) return;
+                          nb!.recordings.remove(r);
+                          widget.store.changed(nb!);
+                          await File(widget.store.assetPath(r.asset)).delete().then((_) {}, onError: (_) {});
+                          refresh(() {});
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'save', child: Text('Speichern unter…')),
+                          PopupMenuItem(value: 'delete', child: Text('Löschen')),
+                        ],
+                      ),
+                    ),
+                ])));
   }
 
   Future<void> _exportPdf() async {
@@ -968,11 +1083,23 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
     return Scaffold(
       resizeToAvoidBottomInset: false, // the keyboard of the text dialog must not move the page
       appBar: AppBar(
+        leading: widget.onClose == null ? null : IconButton(icon: const Icon(Icons.close), tooltip: 'Diese Seite schließen', onPressed: widget.onClose),
         title: Text(widget.meta.name),
         titleSpacing: narrow ? 0 : null,
         actions: nb == null
             ? null
             : [
+                if (ScreenRecorder.supported)
+                  ValueListenableBuilder(
+                      valueListenable: ScreenRecorder.instance.active,
+                      builder: (context, since, _) => since != null
+                          ? RecordingChip(since: since, onStop: _stopRecording)
+                          : narrow
+                              ? const SizedBox.shrink()
+                              : IconButton(
+                                  icon: const Icon(Icons.fiber_manual_record_outlined, color: Color(0xFFD32F2F)),
+                                  tooltip: 'Bildschirm aufnehmen',
+                                  onPressed: _startRecording)),
                 IconButton(icon: const Icon(Icons.undo), tooltip: 'Rückgängig (Strg+Z)', onPressed: _h.undo.isEmpty ? null : () => _step(_h.undo, _h.redo)),
                 IconButton(icon: const Icon(Icons.redo), tooltip: 'Wiederholen (Strg+Y)', onPressed: _h.redo.isEmpty ? null : () => _step(_h.redo, _h.undo)),
                 if (!narrow) const SizedBox(width: 12),
@@ -997,6 +1124,18 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
                         _openOverview();
                       case 'export':
                         _exportPdf();
+                      case 'split':
+                        widget.onSplit?.call();
+                      case 'record':
+                        _startRecording();
+                      case 'recordings':
+                        _openRecordings();
+                      case 'sharpen':
+                        Prefs.instance.sharpenScans = !Prefs.instance.sharpenScans;
+                        Prefs.instance.save();
+                        pdfDetail?.dispose();
+                        pdfDetail = null;
+                        _loadPdf();
                       default:
                         setState(() => page.paper = v);
                         widget.store.changed(nb!);
@@ -1010,6 +1149,12 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
                     for (final (v, label) in [('blank', 'Blanko'), ('lined', 'Liniert'), ('grid', 'Kariert'), ('dots', 'Punktiert')])
                       CheckedPopupMenuItem(value: v, checked: page.paper == v, child: Text('Papier: $label')),
                     const PopupMenuDivider(),
+                    if (widget.onSplit != null) const PopupMenuItem(value: 'split', child: Text('Zweites Notizbuch daneben öffnen')),
+                    if (narrow && ScreenRecorder.supported && ScreenRecorder.instance.active.value == null)
+                      const PopupMenuItem(value: 'record', child: Text('Bildschirm aufnehmen')),
+                    if (nb!.recordings.isNotEmpty) PopupMenuItem(value: 'recordings', child: Text('Aufnahmen (${nb!.recordings.length})')),
+                    if (page.pdf != null)
+                      CheckedPopupMenuItem(value: 'sharpen', checked: Prefs.instance.sharpenScans, child: const Text('Scans beim Zoomen schärfen')),
                     const PopupMenuItem(value: 'export', child: Text('Als PDF exportieren')),
                     const PopupMenuItem(value: 'delete', child: Text('Seite löschen')),
                   ],
@@ -1039,6 +1184,7 @@ class _EditorState extends State<EditorScreen> with SingleTickerProviderStateMix
                 const SingleActivator(LogicalKeyboardKey.numpadSubtract, control: true): () => zoomStep(0.8),
               },
               child: Focus(
+                focusNode: _focus,
                 autofocus: true,
                 child: Column(children: [
                   SaveErrorBar(widget.store),

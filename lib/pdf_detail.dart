@@ -9,11 +9,13 @@ import 'tiles.dart';
 
 /// Keeps a PDF page sharp at any zoom. Pages with real text are re-drawn by PDFium for just the visible
 /// part at the exact zoom (text and lines are vector shapes, so they stay sharp however far you zoom).
-/// Scanned pages are only a picture; there the Rust core rebuilds sharp letter edges from the scan.
+/// Scanned pages are only a picture; there the Rust core rebuilds sharp letter edges from the scan
+/// (unless [sharpenScans] is off: then the scan is drawn as it is, just at full resolution).
 class PdfDetail {
-  PdfDetail(this.page, this.onChange);
+  PdfDetail(this.page, this.onChange, {this.sharpenScans = true});
   final PdfPage page;
   final VoidCallback onChange;
+  final bool sharpenScans;
   late final TileCache tiles = TileCache(onChange, _render, parallel: 2, ready: () => _kind != null);
   String? _kind; // 'text' or 'scan', once known
   int? _scan;
@@ -27,7 +29,7 @@ class PdfDetail {
   Future<void> init() async {
     try {
       final text = await page.loadText();
-      if ((text?.fullText.trim().length ?? 0) > 20) {
+      if (!sharpenScans || (text?.fullText.trim().length ?? 0) > 20) {
         _kind = 'text';
         return onChange();
       }

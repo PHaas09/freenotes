@@ -17,11 +17,13 @@ der eigenen NAS sichern. Kein Abo, kein Konto, keine Cloud eines Anbieters.
 - **Laserpointer** zum Zeigen, die Spur verblasst von selbst
 - **Text und Bilder** auf der Seite einfügen, mit dem Lasso verschieben und vergrößern
 - **PDF importieren** und direkt darauf schreiben
-- **Scharfe PDFs bei jedem Zoom:** Text-PDFs werden beim Hineinzoomen neu und gestochen scharf berechnet. Bei **eingescannten** PDFs schärft FreeNotes die Kanten der Buchstaben nach, damit sie auch stark vergrößert gut lesbar bleiben
+- **Scharfe PDFs bei jedem Zoom:** Text-PDFs werden beim Hineinzoomen neu und gestochen scharf berechnet. Bei **eingescannten** PDFs macht FreeNotes den Text klarer: scharfe Buchstabenkanten, kräftig schwarze Schrift, dünne Striche (z. B. der Querstrich im „t“) bleiben erhalten, Flecken und durchscheinende Rückseiten verschwinden. Lässt sich im Menü ein- und ausschalten
+- **Zwei Notizbücher nebeneinander:** z. B. links das PDF, rechts deine Notizen; beide beschreibbar (am Handy übereinander)
+- **Bildschirmaufnahme** mit oder ohne Ton (Mikrofon), wird beim Notizbuch gespeichert, in der App abgespielt und auf Wunsch als MP4 gespeichert
 - **PDF-Export:** das ganze Notizbuch als PDF speichern, die Handschrift als scharfe Vektoren
 - **Seitenübersicht:** alle Seiten als Miniaturen, per Ziehen umsortieren, duplizieren, löschen
 - **Unendliches Blatt:** ein einziges Blatt ohne Ränder, auf das der Inhalt von über 1000 Seiten passt; bleibt dank Bild-Kacheln (wie bei einer Online-Karte) auch dann flüssig
-- **Zoomen und Verschieben:** zwei Finger (mit Schwung), Touchpad, Strg + Mausrad, Strg + Plus/Minus, rechte Maustaste ziehen; A4-Seiten bis 3000 %, das unendliche Blatt von 0,2 % bis 20 000 %
+- **Zoomen und Verschieben:** zwei Finger (mit Schwung), Touchpad, Strg + Mausrad oder rechte Maustaste halten + Mausrad, Strg + Plus/Minus, rechte Maustaste ziehen; A4-Seiten bis 3000 %, das unendliche Blatt von 0,2 % bis 20 000 %
 - **Strichstärke passt sich dem Zoom an:** hineingezoomt schreibt der Stift automatisch feiner, die Linie sieht am Bildschirm immer gleich dick aus
 - **Notizbücher** mit farbigen Covern, in **Ordnern** sortiert
 - **Papier:** blanko, liniert, kariert oder punktiert, pro Seite wählbar
@@ -49,9 +51,9 @@ Gemessen mit `benchmark/endless_bench_test.dart`: ein unendliches Blatt mit dem 
 
 Alle Dateien gibt es auf der Seite **[Neueste Version](../../releases/latest)**.
 
-> **Update auf 1.3:** FreeNotes 1.3 speichert Notizbücher in einem neuen, rund 10× kleineren Format.
-> Ältere Versionen können diese Dateien nicht öffnen. Bitte **alle Geräte**, die mit derselben NAS
-> synchronisieren, auf 1.3 aktualisieren. Notizbücher aus älteren Versionen öffnet 1.3 ohne Weiteres.
+> **Alle Geräte aktuell halten:** Seit 1.3 speichert FreeNotes Notizbücher in einem neuen, rund 10× kleineren
+> Format, das ältere Versionen nicht öffnen können, und erst 1.4 kennt Bildschirmaufnahmen. Bitte **alle Geräte**,
+> die mit derselben NAS synchronisieren, auf die neueste Version bringen. Ältere Notizbücher öffnet jede neue Version.
 
 ### Windows
 
@@ -100,12 +102,13 @@ iPhone und PC (mit laufendem AltServer) im selben WLAN sind. Alternativ in AltSt
 Mit einem Apple-Entwicklerkonto (99 €/Jahr) ginge es ohne Ablauf über TestFlight.
 
 Beim ersten Suchen nach der NAS fragt das iPhone, ob FreeNotes Geräte im lokalen Netzwerk finden darf: **Erlauben**.
+Bei der ersten Bildschirmaufnahme fragt es nach Aufnahme und (mit Ton) Mikrofon: ebenfalls **Erlauben**.
 
 ## Bedienung
 
 | Aktion | So geht's |
 |---|---|
-| Zoomen | zwei Finger, Touchpad-Pinch oder **Strg + Mausrad** |
+| Zoomen | zwei Finger, Touchpad-Pinch, **Strg + Mausrad** oder **rechte Maustaste halten + Mausrad** |
 | Verschieben | Mausrad (mit **Umschalt** waagrecht), rechte Maustaste ziehen, zwei Finger |
 | Ganze Seite / alles zeigen | **Strg + 0** oder Knopf *Ganze Seite zeigen* |
 | Stufenweise zoomen | **Strg + Plus** / **Strg + Minus** |
@@ -119,6 +122,10 @@ Beim ersten Suchen nach der NAS fragt das iPhone, ob FreeNotes Geräte im lokale
 | Text einfügen | Text-Werkzeug wählen, auf die Seite tippen |
 | Seiten ordnen | Seitenübersicht (Kachel-Symbol, am Handy im Menü ⋮), Seite an die neue Stelle ziehen |
 | Als PDF speichern | Menü ⋮ → *Als PDF exportieren* |
+| Zwei Notizbücher nebeneinander | Menü ⋮ → *Zweites Notizbuch daneben öffnen*; das ✕ der zweiten Seite schließt sie wieder |
+| Bildschirm aufnehmen | roter Kreis oben (am Handy Menü ⋮ → *Bildschirm aufnehmen*), *Mit Ton* oder *Ohne Ton* wählen; der rote Knopf mit der Zeit beendet die Aufnahme |
+| Aufnahmen ansehen | Menü ⋮ → *Aufnahmen*: antippen spielt ab, ⋮ → *Speichern unter…* oder *Löschen* |
+| Scans schärfen ein/aus | auf einer PDF-Seite Menü ⋮ → *Scans beim Zoomen schärfen* |
 
 ## Wo liegen meine Notizen?
 
@@ -127,7 +134,7 @@ Lokal in **Dokumente\FreeNotes**:
 ```
 library.json          Ordner und Liste der Notizbücher
 notebooks\<id>.json   Seiten eines Notizbuchs (ab 1.3 in einem kompakten Binärformat, trotz der Endung)
-assets\               importierte PDFs und Bilder
+assets\               importierte PDFs, Bilder und Bildschirmaufnahmen (MP4)
 ```
 
 **Anderen Speicherort wählen** (z. B. ein zweites Laufwerk): Zahnrad → *Speicherort ändern…*. FreeNotes
@@ -194,6 +201,9 @@ cargo install flutter_rust_bridge_codegen --version 2.13.0
 flutter_rust_bridge_codegen generate
 ```
 
+Test der Bildschirmaufnahme in der echten Windows-App:
+`flutter test integration_test/recording_test.dart -d windows`
+
 Installer bauen (Ergebnis in `dist\`):
 
 ```bash
@@ -231,17 +241,22 @@ App-Icon ändern: `tool/make_icon.py` anpassen, dann `python tool/make_icon.py` 
 | `lib/sync.dart` | WebDAV-Synchronisierung mit der NAS, Zertifikat-Prüfung |
 | `lib/nas_wizard.dart` | NAS-Assistent: NAS im Heimnetz finden, anmelden, Ordner wählen |
 | `lib/library_screen.dart` | Startseite: Ordner, Notizbücher, Suche, PDF-Import |
-| `lib/editor_screen.dart` | Editor: Stifte, Formen, Lasso, Radierer, Laser, Zoomen, Text, Bilder, Seiten |
+| `lib/editor_screen.dart` | Editor: Stifte, Formen, Lasso, Radierer, Laser, Zoomen, Text, Bilder, Seiten, Aufnahmen |
+| `lib/workspace.dart` | Ein oder zwei Notizbücher nebeneinander |
+| `lib/recorder.dart` | Bildschirmaufnahme und Abspielen der Aufnahmen |
 | `lib/settings_screen.dart` | NAS-Einstellungen, Speicherort |
 | `lib/src/rust/` | Automatisch erzeugte Dart-Anbindung an den Rust-Kern (nicht von Hand ändern) |
 | `rust/src/freehand.rs` | Strich-Umrisse (perfect-freehand-Algorithmus) und Kalligrafie-Feder |
 | `rust/src/api/ink.rs` | Stifte, Formerkennung, genaues Radieren |
 | `rust/src/api/codec.rs` | Kompaktes Speicherformat der Striche, JPEG für den PDF-Export |
 | `rust/src/api/scene.rs` | Räumlicher Index (R-Baum) für Radierer/Lasso, Kacheln zeichnen auf allen Kernen |
-| `rust/src/api/scan.rs` | Schärfen eingescannter PDF-Seiten beim Zoomen |
+| `rust/src/api/scan.rs` | Klarer Text in eingescannten PDF-Seiten beim Zoomen |
+| `rust/src/api/record.rs`, `rust/src/winrec.rs` | Bildschirmaufnahme unter Windows (Media Foundation: H.264-Video, AAC-Ton) |
+| `android/…/RecorderService.kt`, `ios/Runner/AppDelegate.swift` | Bildschirmaufnahme auf Android (MediaProjection) und iPhone (ReplayKit) |
 | `rust_builder/` | Baut den Rust-Kern automatisch in jede App mit (cargokit) |
 | `test/` | Tests für Sync, Radierer, Lasso, Formen, Speicherformat, Zertifikat, Speicherort-Wechsel, Kacheln |
 | `benchmark/` | Messungen: 1000 A4-Seiten auf einem unendlichen Blatt, Scan-Schärfung, PDF-Export |
+| `integration_test/` | Test der Bildschirmaufnahme in der laufenden Windows-App |
 | `installer/`, `tool/` | Windows-Installer, Build-Skript, Icon-Generator |
 | `.github/workflows/` | Baut die iPhone-App und die Linux-App (.deb) auf GitHub |
 
@@ -250,6 +265,10 @@ App-Icon ändern: `tool/make_icon.py` anpassen, dann `python tool/make_icon.py` 
 - **Eingescannte PDFs:** Die Schärfung macht die Kanten der Buchstaben scharf, kann aber keine Details erfinden,
   die im Scan nicht vorhanden sind. Sehr kleine Schrift in groben Scans bleibt grob.
 - **PDF-Export:** Importierte PDF-Seiten werden als Bild (216 dpi) eingebettet, nicht als Original-Vektoren.
+- **Bildschirmaufnahme:** Unter Windows wird das FreeNotes-Fenster aufgenommen (ohne Mauszeiger; zum Zeigen den
+  Laserpointer nehmen), auf Android und dem iPhone der Bildschirm über die Aufnahme des Systems. Unter Linux gibt es
+  noch keine Aufnahme; Aufnahmen von anderen Geräten spielt dort der Videoplayer des Systems ab. Aufnahmen werden wie
+  Bilder mit der NAS abgeglichen, das kann bei langen Videos dauern.
 - Noch nicht enthalten: Handschrifterkennung (Handschrift durchsuchen oder in Text umwandeln),
   Installation über Play Store / App Store.
 

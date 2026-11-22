@@ -1,6 +1,8 @@
 // ignore_for_file: avoid_print
 // Shows how a scanned PDF page looks zoomed in, without and with FreeNotes' scan sharpening.
 // Run: FREENOTES_PDF=path/to/file.pdf FREENOTES_OUT=folder flutter test benchmark/scan_preview_test.dart
+// Optional: FREENOTES_PAGE (index, default 1), FREENOTES_X / FREENOTES_Y (page units, top left of the
+// 512 px tile, default 450 / 70), FREENOTES_ZOOM (times the scan resolution, default 6), FREENOTES_PX (tile size, default 512).
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -13,7 +15,9 @@ import 'package:pdfrx/pdfrx.dart';
 import '../test/rust_init.dart';
 
 void main() {
-  final pdf = Platform.environment['FREENOTES_PDF'], out = Platform.environment['FREENOTES_OUT'];
+  final env = Platform.environment;
+  final pdf = env['FREENOTES_PDF'], out = env['FREENOTES_OUT'];
+  double num(String k, double d) => double.tryParse(env[k] ?? '') ?? d;
   setUpAll(initRust);
 
   testWidgets('zoomed scan: plain vs sharpened', (tester) async {
@@ -22,7 +26,7 @@ void main() {
       Pdfrx.cacheDirectoryPath ??= Directory.systemTemp.path; // no path_provider plugin in tests
       await pdfrxFlutterInitialize();
       final doc = await PdfDocument.openFile(pdf);
-      final page = doc.pages[1];
+      final page = doc.pages[num('FREENOTES_PAGE', 1).toInt()];
       final text = await page.loadText();
       print('Text auf der Seite: ${text?.fullText.trim().length ?? 0} Zeichen');
       const res = PdfDetail.scanRes;
@@ -33,15 +37,16 @@ void main() {
       final scan = await scanLoad(pixels: img.pixels, width: img.width, height: img.height, res: res, bgra: true);
       print('Farbkarten vorbereitet: ${sw.elapsedMilliseconds} ms (${img.width} x ${img.height} px)');
       // a 512 px tile at 6x the scan resolution, in the body text of the right page
-      const unit = res * 6, x0 = 450.0, y0 = 70.0;
+      final unit = res * num('FREENOTES_ZOOM', 6), x0 = num('FREENOTES_X', 450), y0 = num('FREENOTES_Y', 70);
+      final px = num('FREENOTES_PX', 512).toInt();
       sw.reset();
-      final sharp = await scanRender(scan: scan, x0: x0, y0: y0, unit: unit, px: 512);
+      final sharp = await scanRender(scan: scan, x0: x0, y0: y0, unit: unit, px: px);
       print('Kachel geschärft: ${sw.elapsedMilliseconds} ms');
       final plain = await page.render(
-          x: (x0 * unit).round(), y: (y0 * unit).round(), width: 512, height: 512, fullWidth: page.width * unit, fullHeight: page.height * unit);
+          x: (x0 * unit).round(), y: (y0 * unit).round(), width: px, height: px, fullWidth: page.width * unit, fullHeight: page.height * unit);
       Future<void> save(ui.Image i, String name) async =>
           File('$out/$name').writeAsBytesSync((await i.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List());
-      await save(await imageFromPixels(sharp, 512, 512), 'scan_sharp.png');
+      await save(await imageFromPixels(sharp, px, px), 'scan_sharp.png');
       await save(await plain!.createImage(), 'scan_plain.png');
       scanDrop(scan: scan);
       await doc.dispose();

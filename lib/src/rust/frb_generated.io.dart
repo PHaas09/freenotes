@@ -5,6 +5,7 @@
 
 import 'api/codec.dart';
 import 'api/ink.dart';
+import 'api/record.dart';
 import 'api/scan.dart';
 import 'api/scene.dart';
 
