@@ -1,4 +1,4 @@
-// The Windows app records itself into an MP4. Run: flutter test integration_test/recording_test.dart -d windows
+// The Windows app records itself into an MP4 and plays it back. Run: flutter test integration_test/recording_test.dart -d windows
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +6,7 @@ import 'package:freenotes/recorder.dart';
 import 'package:freenotes/src/rust/frb_generated.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:video_player/video_player.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -33,8 +34,14 @@ void main() {
     expect(saved, ms);
     expect(ms, greaterThan(1000));
     final size = File(path).lengthSync();
-    File(path).deleteSync();
     expect(size, greaterThan(5000), reason: 'an MP4 with video frames');
+    // the app's own player opens it
+    final player = VideoPlayerController.file(File(path));
+    await player.initialize();
+    expect(player.value.duration.inMilliseconds, greaterThan(1000));
+    expect(player.value.size.width, greaterThan(0));
+    await player.dispose();
+    File(path).deleteSync();
     expect(ScreenRecorder.instance.active.value, isNull);
   }, skip: !Platform.isWindows);
 }
